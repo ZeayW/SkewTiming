@@ -487,7 +487,10 @@ def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=Fal
             '\t{} overall\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
                 usage,test_r2, test_mape, test_min_ratio, test_max_ratio))
     else:
-        _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, test_data, batch_size, usage,save_file_dir, flag_save)
+        if flag_infer:
+            _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, test_data,batch_size, usage,save_file_dir, flag_save)
+        else:
+            _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,flag_reverse)
         print(
             '\t{}: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(usage,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio))
 
@@ -584,6 +587,7 @@ def train(model):
                     #path_loss = prob_sum
                     path_loss = prob_sum - 1 * prob_dev
                     train_loss = th.mean((th.exp(1 - path_loss)) * th.abs(labels_hat-POs_label))
+                    #train_loss = th.mean((th.exp(1 - path_loss)) * th.pow(labels_hat - POs_label,2))
 
                 num_POs += len(prob_sum)
 
@@ -617,8 +621,8 @@ def train(model):
         model.flag_train = True
         torch.cuda.empty_cache()
         print('End of epoch {}'.format(epoch))
-        val_r2,val_mape = test_all(val_data,model,options.batch_size,'val')
-        test_r2, test_mape = test_all(test_data,model,options.batch_size,usage='test',flag_group='True')
+        val_r2,val_mape = test_all(val_data,model,options.batch_size,usage='val',flag_reverse=flag_reverse or flag_path)
+        test_r2, test_mape = test_all(test_data,model,options.batch_size,usage='test',flag_reverse=flag_reverse or flag_path,flag_group='True')
         model.flag_train = True
         torch.cuda.empty_cache()
         if options.checkpoint:
