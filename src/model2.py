@@ -517,7 +517,7 @@ class TimeConv(nn.Module):
 
                 h_global = th.matmul(nodes_prob_tr,nodes_emb)
 
-                h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
+                #h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
 
                 PIs_mask = graph.ndata['is_pi'] == 1
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
@@ -648,10 +648,10 @@ class ACCNN(nn.Module):
                     isGate_mask = graph.ndata['is_module'][nodes] == 0
                     nodes_gate = nodes[isGate_mask]
                     nodes_module = nodes[isModule_mask]
-                    if len(nodes_gate)!=0: graph.pull(nodes_gate, fn.copy_src('h', 'm'),fn.mean('m', 'neigh'), self.nodes_func_gate, etype='intra_gate')
-                    if len(nodes_module)!=0: graph.pull(nodes_module, fn.copy_src('h', 'm'), fn.mean('m', 'neigh'), self.nodes_func_module, etype='intra_module')
+                    if len(nodes_gate)!=0: graph.pull(nodes_gate, fn.copy_u('h', 'm'),fn.mean('m', 'neigh'), self.nodes_func_gate, etype='intra_gate')
+                    if len(nodes_module)!=0: graph.pull(nodes_module, fn.copy_u('h', 'm'), fn.mean('m', 'neigh'), self.nodes_func_module, etype='intra_module')
                 else:
-                    graph.pull(nodes, fn.copy_src('h', 'm'), fn.mean('m', 'neigh'), self.nodes_func)
+                    graph.pull(nodes, fn.copy_u('h', 'm'), fn.mean('m', 'neigh'), self.nodes_func)
 
             h = graph.ndata['h'][PO_mask]
             rst = self.mlp_out(h)

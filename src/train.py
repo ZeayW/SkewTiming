@@ -55,7 +55,7 @@ with open(data_file, 'rb') as f:
 with open(split_file, 'rb') as f:
     split_list = pickle.load(f)
 
-with open('designs_group4.pkl','rb') as f:
+with open('designs_group.pkl','rb') as f:
     designs_group = pickle.load(f)
 
 def cat_tensor(t1,t2):
@@ -471,6 +471,8 @@ def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=Fal
         labels_hat_all, labels_all = None, None
         batch_sizes = [64, 32, 17, 8]
         for i, data in enumerate(test_data):
+            # print(len(data))
+            # continue
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
             else:
@@ -594,7 +596,7 @@ def train(model):
                     train_r2, train_mape, ratio, min_ratio, max_ratio = cal_metrics(total_labels_hat, total_labels)
                     path_loss_avg = totoal_path_loss / num_POs
                     prob_avg = total_prob / num_POs
-                    print('{}/{} train_loss:{:.3f}, {:.3f} {:.3f}\ttrain_r2:{:.3f}\ttrain_mape:{:.3f}, ratio:{:.2f}-{:.2f}'.format((batch+1)*options.batch_size,num_traindata,train_loss.item(),path_loss_avg,prob_avg,train_r2.item(),train_mape.item(),min_ratio,max_ratio))
+                    print('{}/{} train_loss:{:.3f}, {:.3f} {:.3f}\ttrain_r2:{:.3f}\ttrain_mape:{:.3f}, ratio:{:.2f}-{:.2f}'.format((batch+1)*options.batch_size,num_traindata,train_loss.item(),path_loss_avg,prob_avg,train_r2,train_mape,min_ratio,max_ratio))
 
                 if len(labels_hat) ==0:
                     continue
