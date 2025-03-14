@@ -425,11 +425,13 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
         return labels_hat, labels,test_loss, test_r2,test_mape,min_ratio,max_ratio
     #model.flag_train = True
 
-def test(model,test_data,flag_reverse):
+def test(model,test_data,flag_reverse,batch_size):
 
-    batch_size = options.batch_size if flag_reverse else len(test_data)
+    #batch_size = options.batch_size if flag_reverse else len(test_data)
     test_idx_loader = get_idx_loader(test_data, batch_size)
     model.flag_train = False
+    # print(len(test_data))
+    # print(test_data[0])
     with (th.no_grad()):
         labels,labels_hat = None,None
         # for i in range(0,len(test_data),batch_size):
@@ -471,12 +473,12 @@ def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=Fal
         labels_hat_all, labels_all = None, None
         batch_sizes = [64, 32, 17, 8]
         for i, data in enumerate(test_data):
-            # print(len(data))
+            # print(len(test_data))
             # continue
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
             else:
-                labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, data,flag_reverse)
+                labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, data,flag_reverse,batch_size)
             print(
                 '\t{} group:{},\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
                     usage,i, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio))
@@ -490,7 +492,7 @@ def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=Fal
         if flag_infer:
             _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, test_data,batch_size, usage,save_file_dir, flag_save)
         else:
-            _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,flag_reverse)
+            _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,flag_reverse,batch_size)
         print(
             '\t{}: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(usage,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio))
 
@@ -502,7 +504,7 @@ def train(model):
 
     train_data = load_data('train',options.quick)
     val_data = load_data('val',options.quick)
-    test_data = load_data('test',options.quick)
+    test_data = load_data('test',options.quick,flag_grouped=options.flag_group)
     print("Data successfully loaded")
 
     train_idx_loader = get_idx_loader(train_data,options.batch_size)
