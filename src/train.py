@@ -20,6 +20,7 @@ from torchmetrics import R2Score
 import dgl
 import tee
 from utils import *
+from time import time
 import itertools
 
 
@@ -45,8 +46,13 @@ data_path = options.data_savepath
 if data_path.endswith('/'):
     data_path = data_path[:-1]
 data_file = os.path.join(data_path, 'data.pkl')
-#split_file = os.path.join(data_path, 'split.pkl')
-split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
+if 'round7' in data_path:
+    split_file = os.path.join(data_path, 'split.pkl')
+    designs_group = None
+else:
+    split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
+    with open('designs_group.pkl', 'rb') as f:
+        designs_group = pickle.load(f)
 
 with open(data_file, 'rb') as f:
     data_all = pickle.load(f)
@@ -55,8 +61,7 @@ with open(data_file, 'rb') as f:
 with open(split_file, 'rb') as f:
     split_list = pickle.load(f)
 
-with open('designs_group.pkl','rb') as f:
-    designs_group = pickle.load(f)
+
 
 def cat_tensor(t1,t2):
     if t1 is None:
@@ -88,7 +93,7 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
 
     loaded_data = []
     if flag_grouped:
-        loaded_data = [[],[],[],[]]
+        loaded_data = {}
     for  graph,graph_info in data:
         #print(graph_info['design_name'])
         #if int(graph_info['design_name'].split('_')[-1]) in [54, 96, 131, 300, 327, 334, 397]:
@@ -135,8 +140,13 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
         #graph_info['PI_mask'] = PI_mask
         graph_info['delay-label_pairs'] = graph_info['delay-label_pairs'][case_range[0]:case_range[1]]
         if flag_grouped:
-            group_id = designs_group[graph_info['design_name']]
-            loaded_data[group_id].append(graph_info)
+            if designs_group is None:
+                loaded_data[graph_info['design_name']] = loaded_data.get(graph_info['design_name'],[])
+                loaded_data[graph_info['design_name']].append(graph_info)
+            else:
+                group_id = designs_group[graph_info['design_name']]
+                loaded_data[group_id] = loaded_data.get(group_id,[])
+                loaded_data[group_id].append(graph_info)
         else:
             loaded_data.append(graph_info)
 
@@ -285,6 +295,9 @@ def get_batched_data(graphs,flag_r):
             sampled_graphs.ndata['hp'][po][k] = 1
             sampled_graphs.ndata['hd'][po][k] = 0
 
+        #print(th.sum(sampled_graphs.ndata['hp']),th.sum(sampled_graphs.ndata['is_po']))
+
+
     return sampled_graphs,graphs_info
 
 def cal_metrics(labels_hat,labels):
@@ -330,9 +343,10 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
 
             flag_r = options.flag_reverse or options.flag_path_supervise
             sampled_graphs, graphs_info = get_batched_data(graphs, flag_r)
-
+            graphs_info['nodes_name'] = data['nodes_name']
             #print(data['design_name'])
             for j in range(num_cases):
+
                 flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
                 POs_label, PIs_delay, sampled_graphs, graphs_info = gather_data(sampled_data, sampled_graphs,
                                                                                 graphs_info, j, flag_addedge)
@@ -350,14 +364,15 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                 new_edges[1] = sampled_graphs.edges(etype='pi2po')[1].detach().cpu().numpy().tolist()
                 if flag_addedge:
                     sampled_graphs.remove_edges(sampled_graphs.edges('all', etype='pi2po')[2], etype='pi2po')
-                data['delay-label_pairs'][j] = (
-                    PIs_delay, POs_label, None, new_edges, cur_POs_criticalprob.detach().cpu().numpy().tolist())
-
-            new_dataset.append((data['graph'], data))
+            #     data['delay-label_pairs'][j] = (
+            #         PIs_delay, POs_label, None, new_edges, cur_POs_criticalprob.detach().cpu().numpy().tolist())
+            #
+            # new_dataset.append((data['graph'], data))
 
         test_loss = Loss(labels_hat, labels).item()
         test_r2, test_mape, ratio,min_ratio, max_ratio = cal_metrics(labels_hat,labels)
 
+        flag_save =False
         if flag_save:
             # with open(data_file,'wb') as f:
             #     pickle.dump(new_dataset,f)
@@ -381,6 +396,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
             temp_mape = th.mean(
                 th.abs(labels_hat[th.logical_and(mask1, mask_l)] - labels[th.logical_and(mask1, mask_l)]) / labels[
                     th.logical_and(mask1, mask_l)])
+            #print(labels_hat[mask1],labels[mask1])
             print(temp_r2, temp_mape)
             temp_r2 = R2_score(labels_hat[mask2], labels[mask2]).item()
             temp_mape = th.mean(
@@ -451,6 +467,7 @@ def test(model,test_data,flag_reverse,batch_size):
             sampled_graphs, graphs_info = get_batched_data(graphs,flag_r)
 
             for j in range(num_cases):
+                torch.cuda.empty_cache()
                 flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
                 POs_label, PIs_delay, sampled_graphs,graphs_info = gather_data(sampled_data,sampled_graphs,graphs_info,j,flag_addedge)
 
@@ -472,16 +489,19 @@ def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=Fal
     if flag_group:
         labels_hat_all, labels_all = None, None
         batch_sizes = [64, 32, 17, 8]
-        for i, data in enumerate(test_data):
+        if len(test_data)!=4:
+            batch_sizes = [1]*len(test_data)
+        for i, (name, data) in enumerate(test_data.items()):
             # print(len(test_data))
             # continue
+            if name not in ['picorv32']: continue
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
             else:
                 labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, data,flag_reverse,batch_size)
             print(
-                '\t{} group:{},\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
-                    usage,i, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio))
+                '\t{} {},\t#endpoints:{}\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
+                    usage,name, len(labels),test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio))
             labels_hat_all = cat_tensor(labels_hat_all, labels_hat)
             labels_all = cat_tensor(labels_all, labels)
         test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
@@ -648,13 +668,6 @@ if __name__ == "__main__":
         options.data_savepath = input_options.data_savepath
 
 
-        # for arg in vars(input_options):
-        #
-        #     if arg not in vars(options):
-        #         print(arg)
-        #
-        #         options.arg = input_options.arg
-
         options.target_residual = input_options.target_residual
         #options.flag_filter = input_options.flag_filter
         #options.flag_reverse = input_options.flag_reverse
@@ -673,77 +686,83 @@ if __name__ == "__main__":
         options.flag_group = input_options.flag_group
         options.flag_degree = input_options.flag_degree
 
-        print(options)
-        # exit()
-        model = init_model(options)
-        model.flag_train = True
-        model.flag_reverse = options.flag_reverse
-        model.flag_path_supervise = options.flag_path_supervise
-        flag_inference = True
 
-        new_out_dim = 0
-        if options.global_info_choice in [0, 1, 2]:
-            new_out_dim += options.hidden_dim
-        elif options.global_info_choice in [3, 4, 5]:
-            new_out_dim += options.hidden_dim + 1
-        elif options.global_info_choice in [6]:
-            new_out_dim += options.hidden_dim + 2
-        elif options.global_info_choice == 7:
-            new_out_dim += options.hidden_dim + 2
-        elif options.global_info_choice == 8:
-            new_out_dim += options.hidden_dim + 1 + num_module_types + num_gate_types
-        if options.global_cat_choice in [0,3,4]:
-            new_out_dim += 1
-        elif options.global_cat_choice in [1,5,6]:
-            new_out_dim += options.hidden_dim
+        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
+        logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
+        log_idx = max(logs_idx)+1
+        stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
+        with tee.StdoutTee(stdout_f):
+            print(options)
+            # exit()
+            model = init_model(options)
+            model.flag_train = True
+            model.flag_reverse = options.flag_reverse
+            model.flag_path_supervise = options.flag_path_supervise
+            flag_inference = True
 
-        if options.flag_reverse and new_out_dim != 0:
-            model.mlp_out_new = MLP(new_out_dim, options.hidden_dim, options.hidden_dim,1,negative_slope=0.1)
-            if options.global_out_choice == 1:
-                model.mlp_out_new2 = MLP(new_out_dim, options.hidden_dim, options.hidden_dim, 1, negative_slope=0.1)
+            new_out_dim = 0
+            if options.global_info_choice in [0, 1, 2]:
+                new_out_dim += options.hidden_dim
+            elif options.global_info_choice in [3, 4, 5]:
+                new_out_dim += options.hidden_dim + 1
+            elif options.global_info_choice in [6]:
+                new_out_dim += options.hidden_dim + 2
+            elif options.global_info_choice == 7:
+                new_out_dim += options.hidden_dim + 2
+            elif options.global_info_choice == 8:
+                new_out_dim += options.hidden_dim + 1 + num_module_types + num_gate_types
+            if options.global_cat_choice in [0,3,4]:
+                new_out_dim += 1
+            elif options.global_cat_choice in [1,5,6]:
+                new_out_dim += options.hidden_dim
 
-        if options.global_cat_choice in [4, 5,6]:
-            model.mlp_w = MLP(1, 32, 1)
+            if options.flag_reverse and new_out_dim != 0:
+                model.mlp_out_new = MLP(new_out_dim, options.hidden_dim, options.hidden_dim,1,negative_slope=0.1)
+                if options.global_out_choice == 1:
+                    model.mlp_out_new2 = MLP(new_out_dim, options.hidden_dim, options.hidden_dim, 1, negative_slope=0.1)
 
-        #if True:
-        # if options.flag_reverse and not options.flag_path_supervise:
-        #     if options.pi_choice == 0: model.mlp_global_pi = MLP(2, int(options.hidden_dim / 2), options.hidden_dim)
-        #     model.mlp_out_new = MLP(options.out_dim, options.hidden_dim, 1)
-        model = model.to(device)
-        model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu)))
-        usages = ['train','test','val']
-        usages = ['test']
+            if options.global_cat_choice in [4, 6]:
+                model.mlp_w = MLP(1, 32, 1)
+
+            #if True:
+            # if options.flag_reverse and not options.flag_path_supervise:
+            #     if options.pi_choice == 0: model.mlp_global_pi = MLP(2, int(options.hidden_dim / 2), options.hidden_dim)
+            #     model.mlp_out_new = MLP(options.out_dim, options.hidden_dim, 1)
+            model = model.to(device)
+            model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu)))
+            usages = ['train','test','val']
+            usages = ['test']
 
 
-        batch_sizes = [64,32,17,8]
+            batch_sizes = [64,32,17,8]
 
-        for usage in usages:
-            flag_save = True
-            flag_infer = True
-            save_file_dir = options.checkpoint
-            test_data = load_data(usage,options.quick,flag_inference,options.flag_group)
+            for usage in usages:
+                flag_save = True
+                flag_infer = True
+                save_file_dir = options.checkpoint
+                test_data = load_data(usage,options.quick,flag_inference,options.flag_group)
 
-            #test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.flag_reverse)
-            test_all(test_data,model,options.batch_size,options.flag_reverse,'test',options.flag_group,flag_infer,flag_save,save_file_dir)
-            # if options.flag_group:
-            #     labels_hat_all,labels_all = None,None
-            #     for i,data in enumerate(test_data):
-            #         labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir, flag_save)
-            #         #labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, data,options.flag_reverse)
-            #         print(
-            #             '\tgroup:{},\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
-            #                 i,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio))
-            #         labels_hat_all = cat_tensor(labels_hat_all,labels_hat)
-            #         labels_all = cat_tensor(labels_all, labels)
-            #     test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
-            #     print(
-            #         '\toverall\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
-            #             test_r2, test_mape, test_min_ratio, test_max_ratio))
-            # else:
-            #     _,_,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio = inference(model, test_data,options.batch_size,usage,save_file_dir,flag_save)
-            #     print(
-            #         '\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss, test_r2,
-            #                                                                                                  test_mape,test_min_ratio,test_max_ratio))
+                #test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.flag_reverse)
+                test_all(test_data,model,options.batch_size,options.flag_reverse,'test',options.flag_group,flag_infer,flag_save,save_file_dir)
+                # if options.flag_group:
+                #     labels_hat_all,labels_all = None,None
+                #     for i,data in enumerate(test_data):
+                #         labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir, flag_save)
+                #         #labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, data,options.flag_reverse)
+                #         print(
+                #             '\tgroup:{},\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
+                #                 i,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio))
+                #         labels_hat_all = cat_tensor(labels_hat_all,labels_hat)
+                #         labels_all = cat_tensor(labels_all, labels)
+                #     test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
+                #     print(
+                #         '\toverall\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
+                #             test_r2, test_mape, test_min_ratio, test_max_ratio))
+                # else:
+                #     _,_,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio = inference(model, test_data,options.batch_size,usage,save_file_dir,flag_save)
+                #     print(
+                #         '\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss, test_r2,
+                #                                                                                                  test_mape,test_min_ratio,test_max_ratio))
 
     elif options.checkpoint:
         print('saving logs and models to ../checkpoints/{}'.format(options.checkpoint))

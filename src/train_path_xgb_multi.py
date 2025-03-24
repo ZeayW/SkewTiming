@@ -72,7 +72,7 @@ def cat_tensor(t1,t2):
         return th.cat((t1,t2),dim=0)
 
 
-def gather_data(data,index):
+def gather_data(data,index,flag_train):
 
     wrong_pi = set()
     all_pi = set()
@@ -82,34 +82,51 @@ def gather_data(data,index):
     for po_idx, rand_paths_info in enumerate(random_paths):
         feat_po = []
         critical_path_info = critical_paths[po_idx]
-        feat = []
-        # feat.append(critical_path_info['rank'])
-        # feat.append(critical_path_info['rank_ratio'])
-        #feat.append(rand_paths_info['num_nodes'])
-        # feat.append(rand_paths_info['num_seq'])
-        # feat.append(rand_paths_info['num_cmb'])
-        # feat.append(rand_paths_info['num_reg'])
+        feat_global = []
+        feat_global.append(critical_path_info['rank'])
+        feat_global.append(critical_path_info['rank_ratio'])
+        feat_global.append(rand_paths_info['num_nodes'])
+        feat_global.append(rand_paths_info['num_seq'])
+        feat_global.append(rand_paths_info['num_cmb'])
+        feat_global.append(rand_paths_info['num_reg'])
+        
+        paths_info = [critical_path_info]
+        if not flag_train:
+            paths_info.extend(rand_paths_info['paths_rd'])
 
-        path = critical_path_info['path']
-        pi = path[0]
-        all_pi.add(pi)
-        if pi2delay.get(pi, None) is None:
-            wrong_pi.add(pi)
-            input_delay = 0
+        # if len(paths_info)>5:
+        #     print(data['design_name'],len(paths_info))
+        for p in paths_info:
+            feat_path = []
+            pi = p['path'][0]
+            p_len = len(p['path'])
+            all_pi.add(pi)
+            if pi2delay.get(pi,None) is None:
+                wrong_pi.add(pi)
+                input_delay = 0
+            else:
+                input_delay = pi2delay[pi]
+
+            feat_path.append(input_delay)
+            feat_path.append(p_len)
+            feat_path.extend(p['path_ntype'])
+            #print('\t',len(feat_global),len(feat_path),len(p['path_degree']))
+            feat_path.extend(p['path_degree'])
+
+            feat_path.extend([0]*(max_len-p_len))
+
+            feat = feat_global.copy()
+
+            feat.extend(feat_path)
+            feat_po.append(feat)
+
+        if flag_train:
+            POs_feat.append(feat_po[0])
         else:
-            input_delay = pi2delay[pi]
+            POs_feat.append(feat_po)
 
-        path_len = len(path)
-        feat.append(input_delay)
-        feat.append(path_len)
-        feat.extend(critical_path_info['path_ntype'])
-        feat.extend(critical_path_info['path_degree'])
-        feat.extend([0] * (max_len - path_len))
 
-        # print(feat_po.shape)
-        POs_feat.append(feat)
-
-    if index == 0 and len(wrong_pi) != 0: print( len(wrong_pi),len(all_pi))
+    if index == 0 and len(wrong_pi) != 0: print( data['design_name'],len(wrong_pi),len(all_pi))
 
     return POs_label,POs_feat
 
@@ -132,22 +149,29 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
         if usage == 'train':
             case_range = (0,20)
         else:
-            case_range = (0, 100)
+            case_range = (0, 40)
     print("------------Loading {}_data #{} {}-------------".format(usage,len(dataset),case_range))
 
     labels,feats = {}, {}
 
     labels, feat = [],[]
-    loaded_data = {}
+    if usage=='train' or not flag_grouped:
+        loaded_data = []
+    else:
+        loaded_data = {}
 
     for data in dataset:
         end_idx = min(case_range[1],len(data['critical_path']))
         for i in range(case_range[0],end_idx):
-            cur_label,cur_feat = gather_data(data,i)
+            cur_label,cur_feat = gather_data(data,i,usage=='train')
             # labels.extend(cur_label)
             # feat.extend(cur_feat)
             #
-            if flag_grouped:
+            if usage=='train':
+                for j in range(len(cur_feat)):
+                    labels.extend(cur_label)
+                    feat.extend(cur_feat)
+            elif flag_grouped:
                 if designs_group is None:
                     loaded_data[data['design_name']] = loaded_data.get(data['design_name'],[[],[]])
                     loaded_data[data['design_name']][0].extend(cur_label)
@@ -158,13 +182,14 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
                     loaded_data[group_id][0].extend(cur_label)
                     loaded_data[group_id][1].extend(cur_feat)
             else:
-                loaded_data['0'] = loaded_data.get('0', [[], []])
-                loaded_data['0'][0].extend(cur_label)
-                loaded_data['0'][1].extend(cur_feat)
+                labels.extend(cur_label)
+                feat.extend(cur_feat)
 
-
-    for group,data in loaded_data.items():
-        loaded_data[group] = (np.array(data[0]),np.array(data[1]))
+    if usage=='train' or not flag_grouped:
+        loaded_data = [np.array(cur_label),np.array(cur_feat)]
+    # else:
+    #     for group,data in loaded_data.items():
+    #         loaded_data[group] = (np.array(data[0]),np.array(data[1]))
 
     return loaded_data
 
@@ -191,9 +216,15 @@ def cal_metrics(labels_hat,labels):
     return r2,mape,smape,ratio,min_ratio,max_ratio
 
 def test(data,model):
-    labels, feat = data
+    labels, feats = data
+    labels_hat = []
     #feat, labels = load_data(usage, options.quick)
-    labels_hat = model.predict(feat)
+    for feat in feats:
+        label_hat = model.predict(np.array(feat))
+        label_hat = max(label_hat)
+        labels_hat.append(label_hat)
+    #     exit()
+    # labels_hat = model.predict(feat)
     labels = th.tensor(labels).to(device)
     labels_hat = th.tensor(labels_hat).to(device)
     test_r2, test_mape, test_smape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat,labels)
@@ -232,7 +263,7 @@ def train():
     train_feat = pd.DataFrame(train_feat)
     train_label = pd.DataFrame(train_label)
     print('Training ...')
-    xgbr = xgb.XGBRegressor(n_estimators=80, max_depth=20, nthread=25)
+    xgbr = xgb.XGBRegressor(n_estimators=100, max_depth=45, nthread=25)
     #xgbr = xgb.XGBRegressor(n_estimators=45, max_depth=8, nthread=25)
     xgbr.fit(train_feat, train_label)
 
@@ -242,7 +273,7 @@ def train():
     print('Finish!')
 
     print('Testing ...')
-    test_all(test_data,xgbr,'test',options.flag_group)
+    test(test_data,xgbr)
 
 if __name__ == "__main__":
     seed = random.randint(1, 10000)
@@ -259,7 +290,7 @@ if __name__ == "__main__":
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
         log_idx = max(logs_idx) + 1
-        stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint, log_idx)
+        stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
         with tee.StdoutTee(stdout_f):
             print(model)
 

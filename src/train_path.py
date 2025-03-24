@@ -46,9 +46,19 @@ with open(data_file, 'rb') as f:
     max_len,data_all = pickle.load(f)
     design_names = [d['design_name'].split('_')[-1] for d in data_all]
 
+max_len = 81
+
+
+if 'round7' in data_path:
+    split_file = os.path.join(data_path, 'split.pkl')
+    designs_group = None
+else:
+    split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
+    with open('designs_group.pkl', 'rb') as f:
+        designs_group = pickle.load(f)
+
 with open(split_file, 'rb') as f:
     split_list = pickle.load(f)
-
 
 def cat_tensor(t1,t2):
     if t1 is None:
@@ -64,6 +74,7 @@ def gather_data(data,index):
     random_paths = data['random_paths']
     critical_paths, pi2delay, POs_label = data['critical_path'][index]
     POs_feat = []
+    wrong_pi = set()
     for po_idx, rand_paths_info in enumerate(random_paths):
         feat_po = []
         critical_path_info = critical_paths[po_idx]
@@ -83,7 +94,11 @@ def gather_data(data,index):
             feat_path = []
             pi = p['path'][0]
             p_len = len(p['path'])
-            input_delay = pi2delay[pi]
+            if pi2delay.get(pi,None) is None:
+                wrong_pi.add(pi)
+                input_delay = 0
+            else:
+                input_delay = pi2delay[pi]
             feat_path.append(input_delay)
             feat_path.append(p_len)
             feat_path.extend(p['path_ntype'])
@@ -101,15 +116,24 @@ def gather_data(data,index):
         # print(feat_po.shape)
         POs_feat.append(feat_po)
 
-
+    if index==0 and len(wrong_pi)!=0: print(wrong_pi,len(wrong_pi))
     return POs_label,POs_feat
 
 
 
+def cal_metrics(labels_hat,labels):
+    r2 = R2_score(labels_hat, labels).item()
+    mape = th.mean(th.abs(labels_hat[labels != 0] - labels[labels != 0]) / labels[labels != 0])
+    smape = th.mean(th.abs(labels_hat - labels) / (th.abs(labels)+th.abs(labels_hat)))
+    ratio = labels_hat[labels != 0] / labels[labels != 0]
+    min_ratio = th.min(ratio)
+    max_ratio = th.max(ratio)
+
+    return r2,mape,smape,ratio,min_ratio,max_ratio
 
 # print(split_list)
 # exit()
-def load_data(usage,flag_quick=True):
+def load_data(usage,flag_quick=True,flag_grouped=False):
 
     assert usage in ['train','val','test']
 
@@ -126,9 +150,24 @@ def load_data(usage,flag_quick=True):
     print("------------Loading {}_data #{} {}-------------".format(usage,len(dataset),case_range))
 
     loaded_dataset = []
+    if flag_grouped:
+        loaded_dataset = {}
     for data in dataset:
         data['critical_path'] = data['critical_path'][case_range[0]:case_range[1]]
-        loaded_dataset.append(data)
+        #loaded_dataset.append(data)
+        if flag_grouped:
+            if designs_group is None:
+                loaded_dataset[data['design_name']] = loaded_dataset.get(data['design_name'],[])
+                loaded_dataset[data['design_name']].append(data)
+            else:
+                group_id = designs_group[data['design_name']]
+                loaded_dataset[group_id] = loaded_dataset.get(group_id,[])
+                loaded_dataset[group_id].append(data)
+        # if flag_grouped:
+        #     group_id = designs_group[data['design_name']]
+        #     loaded_dataset[group_id].append(data)
+        else:
+            loaded_dataset.append(data)
 
     return loaded_dataset
 
@@ -191,16 +230,32 @@ def test(model,test_data,batch_size):
                 labels_all = cat_tensor(labels_all,labels)
 
         test_loss = Loss(labels_hat_all, labels_all).item()
-        test_r2 = R2_score(labels_hat_all, labels_all).item()
-        test_mape = th.mean(th.abs(labels_hat_all[labels_all != 0] - labels_all[labels_all != 0]) / labels_all[labels_all != 0])
 
-        ratio = labels_hat_all[labels_all != 0] / labels_all[labels_all != 0]
-        min_ratio = th.min(ratio)
-        max_ratio = th.max(ratio)
+        test_r2, test_mape, test_smape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
 
-        return test_loss, test_r2,test_mape,min_ratio,max_ratio
+        return labels_hat_all,labels_all,test_loss, test_r2,test_mape,test_smape,min_ratio,max_ratio
 
+def test_all(test_data,model,batch_size,usage='test',flag_group=False):
+    if flag_group:
+        labels_hat_all, labels_all = None, None
+        batch_sizes = [64, 32, 17, 8]
+        for i, (name, data) in enumerate(test_data.items()):
+            labels_hat,labels,test_loss, test_r2, test_mape, test_smape,test_min_ratio, test_max_ratio = test(model, data,batch_size)
+            print(
+                '\t{} {},\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tsmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
+                    usage,name, test_loss, test_r2, test_mape, test_smape,test_min_ratio, test_max_ratio))
+            labels_hat_all = cat_tensor(labels_hat_all, labels_hat)
+            labels_all = cat_tensor(labels_all, labels)
+        test_r2, test_mape, test_smape,ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
+        print(
+            '\t{} overall\tr2={:.3f}\tmape={:.3f}\tsmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
+                usage,test_r2, test_mape, test_smape,test_min_ratio, test_max_ratio))
+    else:
+        _, _, test_loss, test_r2, test_mape, test_smape,test_min_ratio, test_max_ratio = test(model, test_data, batch_size)
+        print(
+            '\t{}: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(usage,test_loss, test_r2,test_mape,test_smape,test_min_ratio,test_max_ratio))
 
+    return test_r2,test_mape
 def train(model):
     print(options)
     th.multiprocessing.set_sharing_strategy('file_system')
@@ -277,17 +332,17 @@ def train(model):
                 torch.cuda.empty_cache()
 
         torch.cuda.empty_cache()
-        val_loss, val_r2,val_mape,val_min_ratio,val_max_ratio = test(model, val_data,options.batch_size)
-        test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio = test(model,test_data,options.batch_size)
+        _,_,val_loss, val_r2,val_mape,val_smape,val_min_ratio,val_max_ratio = test(model, val_data,options.batch_size)
+        _,_,test_loss, test_r2,test_mape,test_smape,test_min_ratio,test_max_ratio = test(model,test_data,options.batch_size)
         torch.cuda.empty_cache()
         print('End of epoch {}'.format(epoch))
-        print('\tval:  loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(val_loss,val_r2,val_mape,val_min_ratio,val_max_ratio))
-        print('\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss,test_r2,test_mape,test_min_ratio,test_max_ratio))
+        print('\tval:  loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tsmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(val_loss,val_r2,val_mape,val_smape,val_min_ratio,val_max_ratio))
+        print('\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tsmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss,test_r2,test_mape,test_smape,test_min_ratio,test_max_ratio))
         if options.checkpoint:
             save_path = '../checkpoints/{}'.format(options.checkpoint)
             th.save(model.state_dict(), os.path.join(save_path,"{}.pth".format(epoch)))
             with open(os.path.join(checkpoint_path,'res.txt'),'a') as f:
-                f.write('Epoch {}, val: {:.3f},{:.3f}; test:{:.3f},{:.3f}\n'.format(epoch,val_r2,val_mape,test_r2,test_mape))
+                f.write('Epoch {}, val: {:.3f},{:.3f},{:.3f}; test:{:.3f},{:.3f},{:.3f}\n'.format(epoch,val_r2,val_mape,val_smape,test_r2,test_mape,test_smape))
 
 
 if __name__ == "__main__":
@@ -306,25 +361,30 @@ if __name__ == "__main__":
         options.batch_size = input_options.batch_size
         options.gpu = input_options.gpu
         options.quick = input_options.quick
+        options.flag_group = input_options.flag_group
 
-        print(options)
+        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
+        logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
+        log_idx = max(logs_idx) + 1
+        stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint, log_idx)
+        with tee.StdoutTee(stdout_f):
+            print(options)
 
-        model = init_model(options)
+            model = init_model(options)
 
-        model = model.to(device)
-        model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu)))
-        usages = ['train','test','val']
-        usages = ['test']
-        for usage in usages:
-            flag_save = True
-            save_file_dir = options.checkpoint
-            test_data = load_data(usage,options.quick)
+            model = model.to(device)
+            model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu)))
+            usages = ['train','test','val']
+            usages = ['test']
+            for usage in usages:
+                test_data = load_data(usage,options.quick,options.flag_group)
 
-            test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.batch_size)
-
-            print(
-                '\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss, test_r2,
-                                                                                                         test_mape,test_min_ratio,test_max_ratio))
+                test_all(test_data,model,options.batch_size,usage='test',flag_group=options.flag_group)
+                # test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.batch_size)
+                #
+                # print(
+                #     '\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss, test_r2,
+                #                                                                                              test_mape,test_min_ratio,test_max_ratio))
 
     elif options.checkpoint:
         print('saving logs and models to ../checkpoints/{}'.format(options.checkpoint))

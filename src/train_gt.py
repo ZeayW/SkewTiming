@@ -128,7 +128,7 @@ def load_data(usage,flag_quick=True,flag_inference=False):
 
     # with open('data_{}.pkl'.format(usage),'wb') as f:
     #     pickle.dump(loaded_data,f)
-    # exit()
+    #exit()
     return loaded_data
 
 def get_idx_loader(data,batch_size):
@@ -358,23 +358,28 @@ if __name__ == "__main__":
         options.gpu = input_options.gpu
         options.quick = input_options.quick
 
-        print(options)
+        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
+        logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
+        log_idx = max(logs_idx) + 1
+        stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint, log_idx)
+        with tee.StdoutTee(stdout_f):
+            print(options)
 
-        model = init_model(options)
+            model = init_model(options)
 
-        model = model.to(device)
-        model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu)))
-        usages = ['train','test','val']
-        usages = ['test']
-        for usage in usages:
-            flag_save = True
-            save_file_dir = options.checkpoint
-            test_data = load_data(usage,options.quick)
+            model = model.to(device)
+            model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu)))
+            usages = ['train','test','val']
+            usages = ['test']
+            for usage in usages:
+                flag_save = True
+                save_file_dir = options.checkpoint
+                test_data = load_data(usage,options.quick)
 
-            test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.batch_size)
+                test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.batch_size)
 
-            print(
-                '\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss, test_r2,
+                print(
+                    '\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss, test_r2,
                                                                                                          test_mape,test_min_ratio,test_max_ratio))
 
     elif options.checkpoint:
