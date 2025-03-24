@@ -494,7 +494,6 @@ def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=Fal
         for i, (name, data) in enumerate(test_data.items()):
             # print(len(test_data))
             # continue
-            if name not in ['picorv32']: continue
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
             else:
@@ -689,7 +688,7 @@ if __name__ == "__main__":
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
-        log_idx = max(logs_idx)+1
+        log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
         with tee.StdoutTee(stdout_f):
             print(options)

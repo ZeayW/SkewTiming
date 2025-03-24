@@ -289,7 +289,7 @@ if __name__ == "__main__":
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
-        log_idx = max(logs_idx) + 1
+        log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
         with tee.StdoutTee(stdout_f):
             print(model)
