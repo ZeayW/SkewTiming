@@ -153,6 +153,11 @@ def load_data(usage,flag_quick=True,flag_grouped=False):
     if flag_grouped:
         loaded_dataset = {}
     for data in dataset:
+
+        if len(gather_data(data,0)[0]) <= 150:
+            continue
+        if data['design_name'] in ['y_dct', 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+
         data['critical_path'] = data['critical_path'][case_range[0]:case_range[1]]
         #loaded_dataset.append(data)
         if flag_grouped:

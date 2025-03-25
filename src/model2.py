@@ -3,7 +3,7 @@ import dgl
 import torch as th
 from torch import nn
 from dgl import function as fn
-#from xgboost import XGBRegressor
+from xgboost import XGBRegressor
 from utils import *
 from options import get_options
 options = get_options()
@@ -221,6 +221,7 @@ class TimeConv(nn.Module):
         if self.flag_width:
             h_dst = th.cat((h_dst,edges.dst['width2']),dim=1)
         #h_dst = self.linear_feat_module(h_dst)
+
         z = th.cat((edges.src['h'],h_dst),dim=1)
 
         #z = self.mlp_neigh_module(z)
@@ -397,8 +398,7 @@ class TimeConv(nn.Module):
     def forward(self, graph,graph_info):
 
         topo = graph_info['topo']
-        PO_mask = graph_info['POs_mask']
-        PO_feat = graph_info['POs_feat']
+        PO_mask = graph_info['POs']
 
         with (graph.local_scope()):
             graph.edges['intra_module'].data['bit_position'] = graph.edges['intra_module'].data['bit_position'].unsqueeze(1)
@@ -463,15 +463,8 @@ class TimeConv(nn.Module):
 
             h_gnn = graph.ndata['h'][PO_mask]
 
-
-            if self.flag_global:
-                h_global = self.mlp_global(PO_feat)
-
-                h = th.cat([h_gnn,h_global],dim=1)
-            else:
-                h = h_gnn
-
-            rst = self.mlp_out(h)
+            h  = h_gnn
+            rst = self.mlp_out(h_gnn)
 
 
             prob_sum, prob_dev = th.tensor([0.0]),th.tensor([0.0])
@@ -481,6 +474,7 @@ class TimeConv(nn.Module):
                 critical_po_mask = rst.squeeze(1) > 10
                 # if self.flag_filter:
                 #     POs = POs[critical_po_mask]
+                # print(th.sum(graph.ndata['hp'][PO_mask]))
                 POs_criticalprob = None
                 POs = graph_info['POs']
                 nodes_prob,nodes_dst = self.prop_backward(graph,graph_info)
@@ -517,7 +511,20 @@ class TimeConv(nn.Module):
 
                 h_global = th.matmul(nodes_prob_tr,nodes_emb)
 
-                #h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
+                h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
+                # sum =  th.sum(nodes_prob_tr, dim=1)
+                # mask = sum==0
+                # print(nodes_prob_tr.shape)
+                # print(th.sum(graph.ndata['hp'][PO_mask][mask]))
+                # print(th.sum(graph.ndata['hp'][PO_mask]))
+                # nodes_list = th.tensor(range(graph.number_of_nodes())).to(device)
+                # POs = nodes_list[PO_mask]
+                # for nid in POs[mask]:
+                #     suc = graph.predecessors(nid,etype='reverse')
+                #     suc = [graph_info['nodes_name'][n] for n in suc.cpu().numpy().tolist()]
+                #     assert len(suc)==0, '{} {}'.format(graph_info['nodes_name'][nid],suc)
+                # print(len(graph.ndata['hp'][PO_mask]))
+
 
                 PIs_mask = graph.ndata['is_pi'] == 1
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
@@ -633,7 +640,7 @@ class ACCNN(nn.Module):
     def forward(self, graph,graph_info):
 
         topo = graph_info['topo']
-        PO_mask = graph_info['POs_mask']
+        PO_mask = graph_info['POs']
         prob_sum, prob_dev = th.tensor([0.0]), th.tensor([0.0])
         POs_criticalprob = None
 
@@ -666,7 +673,7 @@ class PathModel(nn.Module):
         if impl_choice == 0:
             self.model = MLP(infeat_dim,hidden_dim,hidden_dim,1)
         elif impl_choice==1:
-            self.model = XGBRegressor(n_estimators=500, max_depth=100, nthread=25)
+            self.model = XGBRegressor(n_estimators=100, max_depth=45, nthread=25)
     def forward(self,POs_feat):
         rst = th.zeros((len(POs_feat),1),dtype=th.float).to(device)
         for i,feat in enumerate(POs_feat):

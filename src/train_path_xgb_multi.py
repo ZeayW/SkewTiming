@@ -42,15 +42,11 @@ data_path = options.data_savepath
 if data_path.endswith('/'):
     data_path = data_path[:-1]
 data_file = os.path.join(data_path, 'data.pkl')
-#split_file = os.path.join(data_path, 'split.pkl')
-split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
 
 with open(data_file, 'rb') as f:
     max_len,data_all = pickle.load(f)
     design_names = [d['design_name'].split('_')[-1] for d in data_all]
 
-with open(split_file, 'rb') as f:
-    split_list = pickle.load(f)
 
 max_len = 81
 
@@ -62,6 +58,10 @@ else:
     split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
     with open('designs_group.pkl', 'rb') as f:
         designs_group = pickle.load(f)
+
+with open(split_file, 'rb') as f:
+    split_list = pickle.load(f)
+
 
 def cat_tensor(t1,t2):
     if t1 is None:
@@ -89,9 +89,10 @@ def gather_data(data,index,flag_train):
         feat_global.append(rand_paths_info['num_seq'])
         feat_global.append(rand_paths_info['num_cmb'])
         feat_global.append(rand_paths_info['num_reg'])
-        
+
         paths_info = [critical_path_info]
         if not flag_train:
+            #shuffle(rand_paths_info['paths_rd'])
             paths_info.extend(rand_paths_info['paths_rd'])
 
         # if len(paths_info)>5:
@@ -161,6 +162,12 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
         loaded_data = {}
 
     for data in dataset:
+
+        if len(gather_data(data,0,usage=='train')[0]) <= 150:
+            continue
+        if data['design_name'] in [ 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+
+        print(data['design_name'])
         end_idx = min(case_range[1],len(data['critical_path']))
         for i in range(case_range[0],end_idx):
             cur_label,cur_feat = gather_data(data,i,usage=='train')

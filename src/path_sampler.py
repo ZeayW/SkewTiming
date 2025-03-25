@@ -6,7 +6,7 @@ import os
 import pickle
 from dgl import node_subgraph
 from random import shuffle
-
+import tee
 options = get_options()
 
 data_path = options.data_savepath
@@ -18,9 +18,11 @@ data_file = os.path.join(data_path, 'data.pkl')
 
 with open(data_file, 'rb') as f:
     data_all = pickle.load(f)
-    design_names = [d[1]['design_name'].split('_')[-1] for d in data_all]
+    #design_names = [d[1]['design_name'].split('_')[-1] for d in data_all]
+    design_names = [d[1]['design_name'] for d in data_all]
 
 device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
+
 
 class PathFinder(nn.Module):
     def __init__(self):
@@ -79,17 +81,19 @@ def sample_randompaths(graph,data):
 
     paths_all = []
     for j in range(len(POs)):
-
         nodes_delay_j = nodes_delay[:,j]
 
 
         drive_PIs_mask = th.logical_and(graph.ndata['is_pi']==1,nodes_delay_j>0)
         drive_PIs = nodes_list[drive_PIs_mask].cpu().numpy().tolist()
-        drive_PI_names = [data['nodes_name'][n] for n in drive_PIs]
-        drive_PI_names = [n for n in drive_PI_names if '[' in n]
-        drive_registers = [n.split('[')[0] for n in drive_PI_names]
-        drive_registers = list(set(drive_registers))
-        num_reg = len(drive_registers)
+        num_reg = min(len(drive_PIs),50)
+
+        # drive_PI_names = [data['nodes_name'][n] for n in drive_PIs]
+        # drive_PI_names = [n for n in drive_PI_names if '[' in n]
+        # drive_registers = [n.split('[')[0] for n in drive_PI_names]
+        # drive_registers = list(set(drive_registers))
+        # num_reg = len(drive_registers)
+        #print(data['nodes_name'][POs[j]],[data['nodes_name'][n] for n in drive_PIs],drive_PI_names,drive_registers,num_reg )
 
 
         # PIs_delay = nodes_delay_j[drive_PIs_mask]
@@ -137,6 +141,7 @@ def sample_randompaths(graph,data):
             'num_reg':num_reg,
             'paths_rd':paths
         })
+        #print(len(paths))
         #exit()
 
     return paths_all,max_len
@@ -157,8 +162,7 @@ def sample_criticalpath(graph,data):
 
 
     for i, (PIs_delay, POs_label, _, _ ) in enumerate(data['delay-label_pairs']):
-
-
+        #print(i)
         pi2delay = {PIs[n] : PIs_delay[n] for n in range(len(PIs))}
         POs_rank = {}
         label2po = {}
@@ -194,10 +198,16 @@ def sample_criticalpath(graph,data):
 
             critical_pi = maxdelay_PIs[j].item()
             input_delay = graph.ndata['delay'][critical_pi]
+            if pi2delay.get(critical_pi,None) is None:
+                print(i,data['design_name'],data['nodes_name'][critical_pi],data['nodes_name'][po])
+
+
             cur_nid = critical_pi
             critical_path.append(cur_nid)
             cur_delay = nodes_delay_j[critical_pi]
+            idx = 0
             while True:
+                idx+=1
                 successors = graph.successors(cur_nid,etype='edge')
                 if len(successors)==0:
                     break
@@ -206,6 +216,9 @@ def sample_criticalpath(graph,data):
                 cur_nid = successors[0]
                 critical_path.append(cur_nid.item())
                 cur_delay = cur_delay-1
+
+                if idx>1000:
+                    print(i,j)
 
             max_len = max(len(critical_path), max_len)
 
@@ -228,41 +241,51 @@ def sample_criticalpath(graph,data):
 if __name__ == "__main__":
     new_dataset = []
     max_len_all = 0
-    for i,(graph,graph_info) in enumerate(data_all):
-        new_data = {'design_name': graph_info['design_name']}
-        topo_r = gen_topo(graph, flag_reverse=True)
-        topo_r = [l.to(device) for l in topo_r]
+    stdout_f = './stdout.log'
 
-        graph = heter2homo(graph)
-        nodes_ntype,nodes_degree = collect_nodes_feat(graph)
-        # new_data['nodes_type'] = nodes_ntype.numpy().tolist()
-        # new_data['nodes_degree'] = nodes_degree.numpy().tolist()
-        # print([(graph_info['nodes_name'][i],nodes_degree[i].item()) for i in range(len(nodes_degree))][:50])
-        # exit()
-        graph = add_reverse_edges(graph)
-        graph = graph.to(device)
+    with tee.StdoutTee(stdout_f):
 
-        if '00167' not in graph_info['design_name']:
-            continue
-        print(i,graph_info['design_name'])
+        for i,(graph,graph_info) in enumerate(data_all):
+            new_data = {'design_name': graph_info['design_name']}
+            topo_r = gen_topo(graph, flag_reverse=True)
+            topo_r = [l.to(device) for l in topo_r]
 
-        graph_info['nodes_delay'] = get_nodes_delay(graph,topo_r)
-        graph_info['nodes_type'] = nodes_ntype
-        graph_info['nodes_degree'] = nodes_degree
-        random_paths,max_len = sample_randompaths(graph,graph_info)
-        max_len_all = max(max_len_all,max_len)
-        new_data['random_paths'] = random_paths
-        critical_paths,max_len = sample_criticalpath(graph,graph_info)
-        max_len_all = max(max_len_all, max_len)
-        new_data['critical_path'] = critical_paths
+            graph = heter2homo(graph)
+            nodes_ntype,nodes_degree = collect_nodes_feat(graph)
+            # new_data['nodes_type'] = nodes_ntype.numpy().tolist()
+            # new_data['nodes_degree'] = nodes_degree.numpy().tolist()
+            # print([(graph_info['nodes_name'][i],nodes_degree[i].item()) for i in range(len(nodes_degree))][:50])
+            # exit()
+            graph = add_reverse_edges(graph)
+            graph = graph.to(device)
 
-        new_dataset.append(new_data)
+            # if 'ss_pcm' not in graph_info['design_name']:
+            #     continue
+            # if graph_info['design_name'] not in ['y_quantizer']:
+            #     continue
+            print(i,graph_info['design_name'])
+            #if graph_info['design_name'] not in ['i2c']: continue
 
-        if i>=20:
-            break
 
-    print(max_len_all)
-    # with open('path_data_new4.pkl','wb') as f:
-    #     pickle.dump((max_len_all,new_dataset),f)
-    #
+            graph_info['nodes_delay'] = get_nodes_delay(graph,topo_r)
+            graph_info['nodes_type'] = nodes_ntype
+            graph_info['nodes_degree'] = nodes_degree
+            random_paths,max_len = sample_randompaths(graph,graph_info)
+            print('\t extracted random paths')
+            max_len_all = max(max_len_all,max_len)
+            new_data['random_paths'] = random_paths
+            critical_paths,max_len = sample_criticalpath(graph,graph_info)
+            print('\t extracted critical paths')
+            max_len_all = max(max_len_all, max_len)
+            new_data['critical_path'] = critical_paths
+
+            new_dataset.append(new_data)
+
+            # if i>=20:
+            #     break
+
+        print(max_len_all)
+        with open('path_data_open_aes.pkl','wb') as f:
+            pickle.dump((max_len_all,new_dataset),f)
+        #
 
