@@ -100,6 +100,10 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
         #    continue
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
 
+        if len(graph_info['delay-label_pairs'][0][1]) <= 150:
+            continue
+        if graph_info['design_name'] in ['y_dct', 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+
         if options.flag_homo:
             graph = heter2homo(graph)
         if options.remove01:
@@ -126,6 +130,7 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
         graph.ndata['PO_feat'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.float)
         graph.ndata['PO_feat'][graph.ndata['is_po']==1] = graph_info['POs_feat']
 
+        #print(graph_info['design_name'],len(graph_info['delay-label_pairs']))
         if len(graph_info['delay-label_pairs'][0][0])!= len(graph.ndata['is_pi'][graph.ndata['is_pi'] == 1]):
             print('skip',graph_info['design_name'])
             continue
@@ -341,12 +346,13 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                 graphs.append(data['graph'])
                 #print(data['design_name'])
 
+            # print(num_cases)
             flag_r = options.flag_reverse or options.flag_path_supervise
             sampled_graphs, graphs_info = get_batched_data(graphs, flag_r)
             graphs_info['nodes_name'] = data['nodes_name']
             #print(data['design_name'])
             for j in range(num_cases):
-
+                torch.cuda.empty_cache()
                 flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
                 POs_label, PIs_delay, sampled_graphs, graphs_info = gather_data(sampled_data, sampled_graphs,
                                                                                 graphs_info, j, flag_addedge)
@@ -392,23 +398,25 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
 
             print(th.mean(POs_criticalprob))
             print(len(labels[mask1]) / len(labels), len(labels[mask2]) / len(labels))
-            temp_r2 = R2_score(labels_hat[mask1], labels[mask1]).item()
-            temp_mape = th.mean(
-                th.abs(labels_hat[th.logical_and(mask1, mask_l)] - labels[th.logical_and(mask1, mask_l)]) / labels[
-                    th.logical_and(mask1, mask_l)])
-            #print(labels_hat[mask1],labels[mask1])
-            print(temp_r2, temp_mape)
-            temp_r2 = R2_score(labels_hat[mask2], labels[mask2]).item()
-            temp_mape = th.mean(
-                th.abs(labels_hat[th.logical_and(mask2, mask_l)] - labels[th.logical_and(mask2, mask_l)]) /
-                labels[th.logical_and(mask2, mask_l)])
-            print(temp_r2, temp_mape)
-
-            temp_r3 = R2_score(labels_hat[mask3], labels[mask3]).item()
-            temp_mape = th.mean(
-                th.abs(labels_hat[th.logical_and(mask3, mask_l)] - labels[th.logical_and(mask3, mask_l)]) /
-                labels[th.logical_and(mask3, mask_l)])
-            print(temp_r3, temp_mape)
+            if len(labels_hat[mask1])>=2:
+                temp_r2 = R2_score(labels_hat[mask1], labels[mask1]).item()
+                temp_mape = th.mean(
+                    th.abs(labels_hat[th.logical_and(mask1, mask_l)] - labels[th.logical_and(mask1, mask_l)]) / labels[
+                        th.logical_and(mask1, mask_l)])
+                #print(labels_hat[mask1],labels[mask1])
+                print(temp_r2, temp_mape)
+            if len(labels_hat[mask2]) >= 2:
+                temp_r2 = R2_score(labels_hat[mask2], labels[mask2]).item()
+                temp_mape = th.mean(
+                    th.abs(labels_hat[th.logical_and(mask2, mask_l)] - labels[th.logical_and(mask2, mask_l)]) /
+                    labels[th.logical_and(mask2, mask_l)])
+                print(temp_r2, temp_mape)
+            if len(labels_hat[mask3]) >= 2:
+                temp_r3 = R2_score(labels_hat[mask3], labels[mask3]).item()
+                temp_mape = th.mean(
+                    th.abs(labels_hat[th.logical_and(mask3, mask_l)] - labels[th.logical_and(mask3, mask_l)]) /
+                    labels[th.logical_and(mask3, mask_l)])
+                print(temp_r3, temp_mape)
 
         x = []
         y = []
@@ -492,6 +500,7 @@ def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=Fal
         if len(test_data)!=4:
             batch_sizes = [1]*len(test_data)
         for i, (name, data) in enumerate(test_data.items()):
+            torch.cuda.empty_cache()
             # print(len(test_data))
             # continue
             if flag_infer:
@@ -691,6 +700,7 @@ if __name__ == "__main__":
         log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
         with tee.StdoutTee(stdout_f):
+            print(options.test_iter)
             print(options)
             # exit()
             model = init_model(options)
