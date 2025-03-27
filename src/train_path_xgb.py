@@ -25,6 +25,7 @@ import itertools
 
 from options import get_options
 import pandas as pd
+import sklearn
 # from preprocess import *
 import xgboost as xgb
 
@@ -85,12 +86,12 @@ def gather_data(data,index):
         feat_po = []
         critical_path_info = critical_paths[po_idx]
         feat = []
-        # feat.append(critical_path_info['rank'])
+        feat.append(critical_path_info['rank'])
         # feat.append(critical_path_info['rank_ratio'])
-        # feat.append(rand_paths_info['num_nodes'])
-        # feat.append(rand_paths_info['num_seq'])
-        # feat.append(rand_paths_info['num_cmb'])
-        # feat.append(rand_paths_info['num_reg'])
+        feat.append(rand_paths_info['num_nodes'])
+        feat.append(rand_paths_info['num_seq'])
+        feat.append(rand_paths_info['num_cmb'])
+        feat.append(rand_paths_info['num_reg'])
 
         path = critical_path_info['path']
         pi = path[0]
@@ -143,9 +144,11 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
     loaded_data = {}
 
     for data in dataset:
-        if len(gather_data(data,0)[0]) <= 150:
-            continue
-        if data['design_name'] in [ 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+        if usage=='test' and designs_group is None:
+            if len(gather_data(data,0)[0]) <= 150:
+                continue
+            if data['design_name'] in [ 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+
 
         end_idx = min(case_range[1],len(data['critical_path']))
         for i in range(case_range[0],end_idx):
@@ -262,12 +265,12 @@ if __name__ == "__main__":
         with open(model_save_path,'rb') as f:
             model = pickle.load(f)
 
-        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
+        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '_' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
         log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint, log_idx)
         with tee.StdoutTee(stdout_f):
-            print(model)
+            #print(model)
 
             usages = ['train','test','val']
             usages = ['test']

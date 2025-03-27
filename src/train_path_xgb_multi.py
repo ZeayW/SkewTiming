@@ -26,6 +26,7 @@ import itertools
 from options import get_options
 import pandas as pd
 # from preprocess import *
+import sklearn
 import xgboost as xgb
 
 
@@ -86,13 +87,13 @@ def gather_data(data,index,flag_train):
         feat_global.append(critical_path_info['rank'])
         feat_global.append(critical_path_info['rank_ratio'])
         feat_global.append(rand_paths_info['num_nodes'])
-        feat_global.append(rand_paths_info['num_seq'])
-        feat_global.append(rand_paths_info['num_cmb'])
+        # feat_global.append(rand_paths_info['num_seq'])
+        # feat_global.append(rand_paths_info['num_cmb'])
         feat_global.append(rand_paths_info['num_reg'])
 
         paths_info = [critical_path_info]
         if not flag_train:
-            #shuffle(rand_paths_info['paths_rd'])
+            shuffle(rand_paths_info['paths_rd'])
             paths_info.extend(rand_paths_info['paths_rd'])
 
         # if len(paths_info)>5:
@@ -162,10 +163,11 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
         loaded_data = {}
 
     for data in dataset:
-
-        if len(gather_data(data,0,usage=='train')[0]) <= 150:
-            continue
-        if data['design_name'] in [ 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+        if usage == 'test' and designs_group is None:
+            if len(gather_data(data,0,usage=='train')[0]) <= 150:
+                continue
+            if data['design_name'] in [ 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+        # if data['design_name'] not in ['y_quantizer']: continue
 
         print(data['design_name'])
         end_idx = min(case_range[1],len(data['critical_path']))
@@ -193,7 +195,7 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
                 feat.extend(cur_feat)
 
     if usage=='train' or not flag_grouped:
-        loaded_data = [np.array(cur_label),np.array(cur_feat)]
+        loaded_data = [np.array(labels),np.array(feat)]
     # else:
     #     for group,data in loaded_data.items():
     #         loaded_data[group] = (np.array(data[0]),np.array(data[1]))
@@ -230,11 +232,22 @@ def test(data,model):
         label_hat = model.predict(np.array(feat))
         label_hat = max(label_hat)
         labels_hat.append(label_hat)
+
     #     exit()
+
     # labels_hat = model.predict(feat)
     labels = th.tensor(labels).to(device)
     labels_hat = th.tensor(labels_hat).to(device)
+
+    labels_hat[labels_hat<0] = 0
+
     test_r2, test_mape, test_smape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat,labels)
+
+
+    # l = labels[ratio>5].cpu().numpy().tolist()
+    # lh = labels_hat[ratio > 5].cpu().numpy().tolist()
+    # lh = [round(n,2) for n in lh]
+    # print(list(zip(l,lh)))
 
     return labels_hat,labels,test_r2,test_mape,test_smape,min_ratio,max_ratio
 
@@ -263,7 +276,7 @@ def train():
     print(options)
     th.multiprocessing.set_sharing_strategy('file_system')
 
-    train_label,train_feat = load_data('train',False,options.quick)['0']
+    train_label,train_feat = load_data('train',False,options.quick)
     test_data = load_data('test',options.flag_group,options.quick)
 
     print(train_feat.shape)
@@ -294,12 +307,11 @@ if __name__ == "__main__":
         with open(model_save_path,'rb') as f:
             model = pickle.load(f)
 
-        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
+        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '_' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
         log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
         with tee.StdoutTee(stdout_f):
-            print(model)
 
             usages = ['train','test','val']
             usages = ['test']

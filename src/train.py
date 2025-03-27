@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 import torch
-
+from queue import Queue
 from options import get_options
 #from model import *
 from model2 import *
@@ -99,11 +99,11 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
         #if int(graph_info['design_name'].split('_')[-1]) in [54, 96, 131, 300, 327, 334, 397]:
         #    continue
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
-
-        # if len(graph_info['delay-label_pairs'][0][1]) <= 150:
-        #     continue
-        if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
-        #if graph_info['design_name'] not in ['y_dct']: continue
+        if usage == 'test' and designs_group is None:
+            if len(graph_info['delay-label_pairs'][0][1]) <= 150:
+                continue
+            if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+        #if graph_info['design_name'] not in ['s15850']: continue
         
         if options.flag_homo:
             graph = heter2homo(graph)
@@ -386,7 +386,46 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                     POs_label, PIs_delay, sampled_graphs, graphs_info = gather_data(sampled_data, sampled_graphs,
                                                                                     graphs_info, j, flag_addedge)
                     POs_label = POs_label[POs_mask]
+
                     cur_labels_hat, prob_sum,prob_dev,cur_POs_criticalprob = model(sampled_graphs, graphs_info)
+
+                    ratio = cur_labels_hat[POs_label!=0] / POs_label[POs_label!=0]
+                    # error_mask = ratio>10
+                    # error_pos = POs[POs_label.squeeze(1)!=0][error_mask].cpu().numpy().tolist()
+                    # erro_pos_name = [data['nodes_name'][n] for n in error_pos]
+                    # error_l = POs_label[POs_label!=0][error_mask].cpu().numpy().tolist()
+                    # error_l = [n for n in error_l]
+                    # error_lh = cur_labels_hat[POs_label!=0][error_mask].cpu().numpy().tolist()
+                    # error_lh = [round(n, 2) for n in error_lh]
+                    # if len(error_pos)!=0:
+                    #     print(j)
+                    #     print(list(zip(error_pos,erro_pos_name,error_l,error_lh)))
+
+
+                        # nodes_name = data['nodes_name']
+                        # po_nid = error_pos[0]
+                        # cur_nids = Queue()
+                        # cur_nids.put(po_nid)
+                        # all = []
+                        # homo_g = sampled_graphs
+                        #
+                        # visited = {}
+                        # while cur_nids.qsize()>0:
+                        #     cur_nid = cur_nids.get()
+                        #     if not visited.get(cur_nid,False):
+                        #         visited[cur_nid] = True
+                        #
+                        #         preds = homo_g.predecessors(cur_nid)
+                        #         all.append(cur_nid)
+                        #         #print(cur_nid,nodes_name[cur_nid])
+                        #         for n in preds:
+                        #             if not visited.get(n,False):
+                        #                 cur_nids.put(n.item())
+                        #
+                        # fanin_nodes = [nodes_name[n] for n in all]
+                        # print(set(fanin_nodes))
+                        # print(set(POs_name).intersection(fanin_nodes))
+                    # if j==20: exit()
 
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
 
@@ -405,6 +444,12 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                 #         PIs_delay, POs_label, None, new_edges, cur_POs_criticalprob.detach().cpu().numpy().tolist())
                 #
                 # new_dataset.append((data['graph'], data))
+
+
+
+        # labels_hat[labels_hat>30] = 30
+        labels_hat[labels_hat <0] = 0
+
 
         test_loss = Loss(labels_hat, labels).item()
         test_r2, test_mape, ratio,min_ratio, max_ratio = cal_metrics(labels_hat,labels)
@@ -751,7 +796,7 @@ if __name__ == "__main__":
         log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
         with tee.StdoutTee(stdout_f):
-            print(options.test_iter)
+            print(input_options.test_iter)
             print(options)
             # exit()
             model = init_model(options)

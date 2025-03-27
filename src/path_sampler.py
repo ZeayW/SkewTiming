@@ -9,10 +9,16 @@ from random import shuffle
 import tee
 options = get_options()
 
-data_path = options.data_savepath
-if data_path.endswith('/'):
-    data_path = data_path[:-1]
-data_file = os.path.join(data_path, 'data.pkl')
+rawdata_path = options.rawdata_path
+data_savepath = options.data_savepath
+if rawdata_path.endswith('/'):
+    rawdata_path = rawdata_path[:-1]
+data_file = os.path.join(rawdata_path, 'data.pkl')
+os.makedirs(data_savepath)
+data_savefile = os.path.join(data_savepath,'data.pkl')
+os.system('cp {} {}'.format(os.path.join(rawdata_path,'split.pkl'),data_savepath))
+os.system('cp {} {}'.format(os.path.join(rawdata_path,'ntype2id.pkl'),data_savepath))
+
 
 
 
@@ -86,7 +92,8 @@ def sample_randompaths(graph,data):
 
         drive_PIs_mask = th.logical_and(graph.ndata['is_pi']==1,nodes_delay_j>0)
         drive_PIs = nodes_list[drive_PIs_mask].cpu().numpy().tolist()
-        num_reg = min(len(drive_PIs),50)
+        num_reg = len(drive_PIs)
+        # num_reg = min(len(drive_PIs),50)
 
         # drive_PI_names = [data['nodes_name'][n] for n in drive_PIs]
         # drive_PI_names = [n for n in drive_PI_names if '[' in n]
@@ -106,7 +113,7 @@ def sample_randompaths(graph,data):
 
         nodes_delay_j = nodes_delay_j.cpu().numpy().tolist()
         shuffle(drive_PIs)
-        sampled_PIs = drive_PIs[:num_reg]
+        sampled_PIs = drive_PIs[:min(len(drive_PIs),50)]
         paths = []
 
         #print(data['nodes_name'][POs[j]])
@@ -159,12 +166,15 @@ def sample_criticalpath(graph,data):
     POs = nodes_list[graph.ndata['is_po'] == 1].cpu().numpy().tolist()
     PIs = nodes_list[graph.ndata['is_pi'] == 1].cpu().numpy().tolist()
 
+    POs_idx = {n:i for i,n in enumerate(POs)}
 
 
     for i, (PIs_delay, POs_label, _, _ ) in enumerate(data['delay-label_pairs']):
         #print(i)
         pi2delay = {PIs[n] : PIs_delay[n] for n in range(len(PIs))}
-        POs_rank = {}
+        POs_rank_level = [0]*len(POs)
+        POs_rank = [0] * len(POs)
+
         label2po = {}
         for k,po in enumerate(POs):
             label = POs_label[k]
@@ -172,12 +182,27 @@ def sample_criticalpath(graph,data):
             label2po[label].append(po)
         label2po_sorted = sorted(label2po.items(),key = lambda kv:(kv[0], kv[1]))
         label2po_sorted.reverse()
-        rank = 1
-        for _, pos in label2po_sorted:
-            for po in pos:
-                POs_rank[po] = rank
-            rank += len(pos)
 
+        num = 0
+        num_all = len(POs)
+        for _, pos in label2po_sorted:
+            rank_ratio = num / num_all
+            if rank_ratio<=0.05:
+                rank_level=1
+            elif rank_ratio<=0.4:
+                rank_level = 2
+            elif rank_ratio<=0.7:
+                rank_level = 3
+            else:
+                rank_level = 4
+            for po in pos:
+                POs_rank_level[POs_idx[po]] = rank_level
+                POs_rank[POs_idx[po]] = num
+            num+= len(pos)
+
+        # if i!=0:
+        #     print(list(zip(POs_label,POs_rank_level)))
+        #     exit()
 
         graph.ndata['delay'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.float).to(device)
         graph.ndata['delay'][PIs] = th.tensor(PIs_delay,dtype=th.float).unsqueeze(1).to(device)
@@ -192,14 +217,14 @@ def sample_criticalpath(graph,data):
         for j, po in enumerate(POs):
             critical_path = []
             nodes_delay_j = nodes_delay_base_t[j]
-            drive_PIs_mask = th.logical_and(graph.ndata['is_pi'] == 1, nodes_delay_j > 0)
-            drive_PIs = nodes_list[drive_PIs_mask].cpu().numpy().tolist()
+            #drive_PIs_mask = th.logical_and(graph.ndata['is_pi'] == 1, nodes_delay_j > 0)
+            #drive_PIs = nodes_list[drive_PIs_mask].cpu().numpy().tolist()
             nodes_delay_j = nodes_delay_j.cpu().numpy().tolist()
 
             critical_pi = maxdelay_PIs[j].item()
-            input_delay = graph.ndata['delay'][critical_pi]
-            if pi2delay.get(critical_pi,None) is None:
-                print(i,data['design_name'],data['nodes_name'][critical_pi],data['nodes_name'][po])
+            # input_delay = graph.ndata['delay'][critical_pi]
+            # if pi2delay.get(critical_pi,None) is None:
+            #     print(i,data['design_name'],data['nodes_name'][critical_pi],data['nodes_name'][po])
 
 
             cur_nid = critical_pi
@@ -217,14 +242,11 @@ def sample_criticalpath(graph,data):
                 critical_path.append(cur_nid.item())
                 cur_delay = cur_delay-1
 
-                if idx>1000:
-                    print(i,j)
-
             max_len = max(len(critical_path), max_len)
 
             critical_paths.append({
-                    'rank':POs_rank[po],
-                    'rank_ratio': POs_rank[po]/len(POs_label),
+                    'rank':POs_rank_level[j],
+                    'rank_ratio': POs_rank[j]/len(POs_label),
                     'level':len(critical_path)-1,
                     'path':critical_path,
                     'path_degree': nodes_degree[critical_path].numpy().tolist(),
@@ -285,7 +307,7 @@ if __name__ == "__main__":
             #     break
 
         print(max_len_all)
-        with open('path_data_open_aes.pkl','wb') as f:
+        with open(data_savefile,'wb') as f:
             pickle.dump((max_len_all,new_dataset),f)
         #
 

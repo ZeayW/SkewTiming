@@ -153,10 +153,10 @@ def load_data(usage,flag_quick=True,flag_grouped=False):
     if flag_grouped:
         loaded_dataset = {}
     for data in dataset:
-
-        if len(gather_data(data,0)[0]) <= 150:
-            continue
-        if data['design_name'] in ['y_dct', 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+        if usage == 'test' and designs_group is None:
+            if len(gather_data(data,0)[0]) <= 150:
+                continue
+            if data['design_name'] in ['y_dct', 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
         data['critical_path'] = data['critical_path'][case_range[0]:case_range[1]]
         #loaded_dataset.append(data)
@@ -234,6 +234,8 @@ def test(model,test_data,batch_size):
                 labels_hat_all = cat_tensor(labels_hat_all,labels_hat)
                 labels_all = cat_tensor(labels_all,labels)
 
+        # labels_hat_all[labels_hat_all<0] = 0
+        # labels_hat_all[labels_hat_all > 30] = 30
         test_loss = Loss(labels_hat_all, labels_all).item()
 
         test_r2, test_mape, test_smape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
