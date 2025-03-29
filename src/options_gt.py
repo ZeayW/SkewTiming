@@ -3,6 +3,7 @@ import argparse
 
 def get_options(args=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument('--flag_group',action='store_true')
     parser.add_argument('--feat_choice',type=int,default=0)
     parser.add_argument('--pe_size',type=int,default=128)
     parser.add_argument('--quick',action='store_true')
