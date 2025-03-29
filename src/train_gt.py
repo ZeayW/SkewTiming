@@ -53,11 +53,18 @@ if data_path.endswith('/'):
     data_path = data_path[:-1]
 data_file = os.path.join(data_path, 'data.pkl')
 #split_file = os.path.join(data_path, 'split.pkl')
-split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
 
 with open(data_file, 'rb') as f:
     data_all = pickle.load(f)
     design_names = [d[1]['design_name'].split('_')[-1] for d in data_all]
+
+if 'round7' in data_path:
+    split_file = os.path.join(data_path, 'split.pkl')
+    designs_group = None
+else:
+    split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
+    with open('designs_group.pkl', 'rb') as f:
+        designs_group = pickle.load(f)
 
 with open(split_file, 'rb') as f:
     split_list = pickle.load(f)
@@ -72,7 +79,7 @@ def cat_tensor(t1,t2):
         return th.cat((t1,t2),dim=0)
 # print(split_list)
 # exit()
-def load_data(usage,flag_quick=True,flag_inference=False):
+def load_data(usage,flag_quick=True,flag_grouped=False):
 
     assert usage in ['train','val','test']
 
@@ -89,12 +96,18 @@ def load_data(usage,flag_quick=True,flag_inference=False):
     print("------------Loading {}_data #{} {}-------------".format(usage,len(data),case_range))
 
     loaded_data = []
+    if flag_grouped:
+        loaded_data = {}
     for  i,(graph,graph_info) in enumerate(data):
         #
         # graph_homo = heter2homo(graph)
         # graph.ndata['PE'] = dgl.laplacian_pe(graph_homo, k=options.pe_size, padding=True)
         # loaded_data.append((graph,graph_info))
         # continue
+        if usage == 'test' and designs_group is None:
+            if len(graph_info['delay-label_pairs'][0][1]) <= 150:
+                continue
+            if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
         graph = heter2homo(graph)
         graph.ndata['feat_i'] = graph.ndata['ntype'][:,3:]
@@ -124,7 +137,18 @@ def load_data(usage,flag_quick=True,flag_inference=False):
 
         graph_info['graph'] = graph
         graph_info['delay-label_pairs'] = graph_info['delay-label_pairs'][case_range[0]:case_range[1]]
-        loaded_data.append(graph_info)
+
+        if flag_grouped:
+            if designs_group is None:
+                loaded_data[graph_info['design_name']] = loaded_data.get(graph_info['design_name'],[])
+                loaded_data[graph_info['design_name']].append(graph_info)
+            else:
+                group_id = designs_group[graph_info['design_name']]
+                loaded_data[group_id] = loaded_data.get(group_id,[])
+                loaded_data[group_id].append(graph_info)
+        else:
+            loaded_data.append(graph_info)
+
 
     # with open('data_{}.pkl'.format(usage),'wb') as f:
     #     pickle.dump(loaded_data,f)
@@ -243,16 +267,48 @@ def test(model,test_data,batch_size):
         min_ratio = th.min(ratio)
         max_ratio = th.max(ratio)
 
-        return test_loss, test_r2,test_mape,min_ratio,max_ratio
+        return labels_hat,labels,test_loss, test_r2,test_mape,min_ratio,max_ratio
 
+def cal_metrics(labels_hat,labels):
+    r2 = R2_score(labels_hat, labels).item()
+    mape = th.mean(th.abs(labels_hat[labels != 0] - labels[labels != 0]) / labels[labels != 0])
+    ratio = labels_hat[labels != 0] / labels[labels != 0]
+    min_ratio = th.min(ratio)
+    max_ratio = th.max(ratio)
 
+    return r2,mape,ratio,min_ratio,max_ratio
+
+def test_all(test_data,model,batch_size,usage='test',flag_group=False):
+    if flag_group:
+        labels_hat_all, labels_all = None, None
+        batch_sizes = [64, 32, 17, 8]
+        if len(test_data)!=4:
+            batch_sizes = [1]*len(test_data)
+        for i, (name, data) in enumerate(test_data.items()):
+            torch.cuda.empty_cache()
+            labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, data,batch_size)
+            print(
+                '\t{} {},\t#endpoints:{}\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
+                    usage,name, len(labels),test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio))
+            labels_hat_all = cat_tensor(labels_hat_all, labels_hat)
+            labels_all = cat_tensor(labels_all, labels)
+        test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
+        print(
+            '\t{} overall\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
+                usage,test_r2, test_mape, test_min_ratio, test_max_ratio))
+    else:
+        _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,batch_size)
+        print(
+            '\t{}: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(usage,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio))
+
+    return test_r2,test_mape
 def train(model):
     print(options)
     th.multiprocessing.set_sharing_strategy('file_system')
 
     train_data = load_data('train',options.quick)
     val_data = load_data('val',options.quick)
-    test_data = load_data('test',options.quick)
+    test_data = load_data('test',options.quick,flag_grouped=options.flag_group)
     print("Data successfully loaded")
 
     train_idx_loader = get_idx_loader(train_data,options.batch_size)
@@ -328,8 +384,10 @@ def train(model):
                 torch.cuda.empty_cache()
 
         torch.cuda.empty_cache()
-        val_loss, val_r2,val_mape,val_min_ratio,val_max_ratio = test(model, val_data,options.batch_size)
-        test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio = test(model,test_data,options.batch_size)
+        val_r2, val_mape = test_all(val_data, model, options.batch_size, usage='val',)
+        test_r2, test_mape = test_all(test_data, model, options.batch_size, usage='test',
+                                      flag_group='True')
+
         torch.cuda.empty_cache()
         print('End of epoch {}'.format(epoch))
         print('\tval:  loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(val_loss,val_r2,val_mape,val_min_ratio,val_max_ratio))
@@ -357,6 +415,7 @@ if __name__ == "__main__":
         options.batch_size = input_options.batch_size
         options.gpu = input_options.gpu
         options.quick = input_options.quick
+        options.flag_group = input_options.flag_group
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
@@ -374,13 +433,9 @@ if __name__ == "__main__":
             for usage in usages:
                 flag_save = True
                 save_file_dir = options.checkpoint
-                test_data = load_data(usage,options.quick)
+                test_data = load_data(usage,options.quick,flag_grouped=options.flag_group)
 
-                test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.batch_size)
-
-                print(
-                    '\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss, test_r2,
-                                                                                                         test_mape,test_min_ratio,test_max_ratio))
+                test_all(test_data, model, options.batch_size, usage='test',flag_group=options.flag_group)
 
     elif options.checkpoint:
         print('saving logs and models to ../checkpoints/{}'.format(options.checkpoint))
