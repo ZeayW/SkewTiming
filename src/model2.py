@@ -3,7 +3,7 @@ import dgl
 import torch as th
 from torch import nn
 from dgl import function as fn
-from xgboost import XGBRegressor
+
 from utils import *
 from options import get_options
 options = get_options()
@@ -48,7 +48,6 @@ class TimeConv(nn.Module):
                  global_out_choice=0,
                  global_cat_choice=0,
                  global_info_choice=0,
-                 pi_choice=0,
                  agg_choice=0,
                  attn_choice=1,
                  inv_choice=-1,
@@ -80,7 +79,6 @@ class TimeConv(nn.Module):
         self.flag_delay_pi = flag_delay_pi
         self.flag_delay_pd = flag_delay_pd
         self.flag_ntype_g = flag_ntype_g
-        self.pi_choice = pi_choice
         self.flag_train = flag_train
         self.flag_path_supervise = flag_path_supervise
         self.flag_filter = flag_filter
@@ -92,6 +90,22 @@ class TimeConv(nn.Module):
         self.attn_choice = attn_choice
         self.mlp_pi = MLP(4, int(hidden_dim / 2), hidden_dim)
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
+
+        new_out_dim = 0
+        if self.global_info_choice in [0, 1, 2]:
+            new_out_dim += self.hidden_dim
+        elif self.global_info_choice in [3, 4, 5]:
+            new_out_dim += self.hidden_dim + 1
+        elif self.global_info_choice in [6]:
+            new_out_dim += self.hidden_dim + 2
+        elif self.global_info_choice == 7:
+            new_out_dim += self.hidden_dim + 2
+        if self.global_cat_choice in [0, 3, 4]:
+            new_out_dim += 1
+        elif self.global_cat_choice in [1, 5, 7]:
+            new_out_dim += self.hidden_dim
+        if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
+
 
         out_dim = hidden_dim
         if flag_splitfeat:
@@ -188,7 +202,7 @@ class TimeConv(nn.Module):
 
     def nodes_func_module(self,nodes):
         h = self.activation(nodes.data['neigh'])
-
+        #print('m',th.sum(h[h<0]))
         if self.flag_reverse or self.flag_path_supervise:
             return {'h':h,'attn_sum':nodes.data['attn_sum'],'attn_max': nodes.data['attn_max']}
         else:
@@ -197,6 +211,7 @@ class TimeConv(nn.Module):
     def nodes_func_gate(self,nodes):
         #mask = nodes.data['is_po'].squeeze() != 1
         h = self.activation(nodes.data['neigh'])
+        #print('g', th.sum(h[h < 0]))
         if (self.flag_reverse or self.flag_path_supervise) and self.attn_choice == 1:
             return {'h': h, 'exp_src_sum': nodes.data['exp_src_sum'], 'exp_src_max': nodes.data['exp_src_max']}
         elif (self.flag_reverse or self.flag_path_supervise) and self.attn_choice == 0:
@@ -400,6 +415,7 @@ class TimeConv(nn.Module):
         topo = graph_info['topo']
         PO_mask = graph_info['POs']
 
+        #print(th.sum(graph.ndata['h'][graph.ndata['h']<0]))
         with (graph.local_scope()):
             graph.edges['intra_module'].data['bit_position'] = graph.edges['intra_module'].data['bit_position'].unsqueeze(1)
             #graph.ndata['pos'] = th.zeros((graph.number_of_nodes(),1),dtype=th.float).to(device)
@@ -471,6 +487,7 @@ class TimeConv(nn.Module):
             POs_criticalprob = None
 
             if self.flag_reverse or self.flag_path_supervise:
+
                 critical_po_mask = rst.squeeze(1) > 10
                 # if self.flag_filter:
                 #     POs = POs[critical_po_mask]
@@ -480,7 +497,8 @@ class TimeConv(nn.Module):
                 nodes_prob,nodes_dst = self.prop_backward(graph,graph_info)
                 nodes_dst[nodes_dst < -100] = 0
 
-                if self.flag_path_supervise or self.global_cat_choice in [3,4,5]:
+
+                if self.flag_path_supervise or self.global_cat_choice in [3,4,5,7]:
 
                     graph.ndata['hp'] = nodes_prob
                     graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(device)
@@ -497,6 +515,19 @@ class TimeConv(nn.Module):
 
                     #return rst, prob_sum,prob_dev,POs_criticalprob
                     #return rst, path_loss,POs_delay_d,POs_delay_p,POs_delay_m,POs_delay_w,POs_criticalprob
+                # else:
+                #     graph.ndata['hp'] = nodes_prob
+                #     graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(device)
+                #     graph.ndata['id'][POs] = th.tensor(range(len(POs)), dtype=th.int64).unsqueeze(-1).to(device)
+                #     # print(graph.number_of_edges(etype='pi2po'),len(POs))
+                #     graph.pull(POs, self.message_func_prob, self.reduce_func_prob, etype='pi2po')
+                #     POs_criticalprob = None
+                #
+                #     POs_criticalprob = graph.ndata['prob_sum'][POs]
+                #
+                #     nodes_prob_tr = th.transpose(nodes_prob,0,1)
+                #     nodes_prob_tr[nodes_prob_tr<0.1] = 0
+                #     prob_sum = th.sum(nodes_prob_tr,dim=1)
 
                 if not self.flag_reverse:
                     return rst, prob_sum,prob_dev,POs_criticalprob
@@ -506,25 +537,13 @@ class TimeConv(nn.Module):
                     nodes_prob = nodes_prob[graph.ndata['is_po']==0]
                     nodes_emb = graph.ndata['h'][graph.ndata['is_po']==0]
 
+                #print(th.sum(nodes_emb[graph.ndata['is_pi']==0][nodes_emb[[graph.ndata['is_pi']==0]]<0]))
 
                 nodes_prob_tr = th.transpose(nodes_prob,0,1)
 
                 h_global = th.matmul(nodes_prob_tr,nodes_emb)
 
-                h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
-                # sum =  th.sum(nodes_prob_tr, dim=1)
-                # mask = sum==0
-                # print(nodes_prob_tr.shape)
-                # print(th.sum(graph.ndata['hp'][PO_mask][mask]))
-                # print(th.sum(graph.ndata['hp'][PO_mask]))
-                # nodes_list = th.tensor(range(graph.number_of_nodes())).to(device)
-                # POs = nodes_list[PO_mask]
-                # for nid in POs[mask]:
-                #     suc = graph.predecessors(nid,etype='reverse')
-                #     suc = [graph_info['nodes_name'][n] for n in suc.cpu().numpy().tolist()]
-                #     assert len(suc)==0, '{} {}'.format(graph_info['nodes_name'][nid],suc)
-                # print(len(graph.ndata['hp'][PO_mask]))
-
+                #h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
 
                 PIs_mask = graph.ndata['is_pi'] == 1
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
@@ -557,6 +576,11 @@ class TimeConv(nn.Module):
                         h_p = self.mlp_pe(h_p)
                     h_global = th.cat((h_global, h_d,h_p), dim=1)
 
+
+                # print(th.sum(h_global[h_global<0]))
+                # exit()
+                #h_global = self.activation(h_global)
+
                 #h_global = (1/th.sum(nodes_prob_tr,dim=1)).unsqueeze(1) * h_global
 
                 if self.global_cat_choice == 0:
@@ -570,9 +594,14 @@ class TimeConv(nn.Module):
                 elif self.global_cat_choice == 4:
                     h = th.cat((rst,self.mlp_w(1-prob_sum)*h_global),dim=1)
                 elif self.global_cat_choice == 5:
+                    # prob_max = th.max(nodes_prob_tr,dim=1)
+                    # h = th.cat((h,(1-prob_max)*h_global),dim=1)
                     h = th.cat((h,(1-prob_sum)*h_global),dim=1)
                 elif self.global_cat_choice == 6:
                     h = th.cat((h,self.mlp_w(1-prob_sum)*h_global),dim=1)
+                elif self.global_cat_choice == 7:
+                    prob_max = th.max(nodes_prob_tr, dim=1).values.unsqueeze(1)
+                    h = th.cat((h, (1 - prob_max) * h_global), dim=1)
 
                 if self.global_out_choice == 0:
                     rst = self.mlp_out_new(h)
@@ -672,8 +701,7 @@ class PathModel(nn.Module):
         self.impl_choice = impl_choice
         if impl_choice == 0:
             self.model = MLP(infeat_dim,hidden_dim,hidden_dim,1)
-        elif impl_choice==1:
-            self.model = XGBRegressor(n_estimators=100, max_depth=45, nthread=25)
+
     def forward(self,POs_feat):
         rst = th.zeros((len(POs_feat),1),dtype=th.float).to(device)
         for i,feat in enumerate(POs_feat):

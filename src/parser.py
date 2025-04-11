@@ -105,9 +105,12 @@ def edges_srcLevel_rating(graph,nodes_level,etype):
     return edges_level_rating
 
 class Parser:
-    def __init__(self,design_dir):
-        self.design_name = os.path.split(design_dir)[-1]
-        self.design_path = design_dir
+    def __init__(self,netlist_file,golden_file,flag_log=False):
+        self.design_name = os.path.split(netlist_file)[-1].split('.')[0]
+        self.flag_log = flag_log
+        self.netlist_file = netlist_file
+        self.golden_file = golden_file
+        # self.design_path = design_dir
         #print(self.design_name,design_dir)
         self.wires_width = {}
         self.const0_index = 0
@@ -176,7 +179,7 @@ class Parser:
         elif ':' in wire:
 
             width = wire[wire.find('[')+1:wire.find(')')]
-            if len(width.split(':'))!=2:
+            if self.flag_log and len(width.split(':'))!=2:
                 print('wire',wire)
                 print('width',width)
 
@@ -201,13 +204,13 @@ class Parser:
         return res
 
     def parse_verilog(self):
-        if 'round7' in self.design_path:
-            file_path = os.path.join(self.design_path, '{}.v'.format(self.design_name))
-        else:
-            file_path = os.path.join(self.design_path,'{}_case.v'.format(self.design_name))
+        # if 'round7' in self.design_path:
+        #     file_path = os.path.join(self.design_path, '{}.v'.format(self.design_name))
+        # else:
+        #     file_path = os.path.join(self.design_path,'{}_case.v'.format(self.design_name))
+        # file_path
 
-
-        with open(file_path, 'r') as f:
+        with open(self.netlist_file, 'r') as f:
             content = f.read()
         content = content[content.find('input'):]
 
@@ -278,9 +281,7 @@ class Parser:
                     #exit()
                 self.fo2fi[output] = ('gate', 'buf', [input])
                 self.nodes[output]['ntype'] = 'buf'
-                if output=='i282_q_reg_d':
-                    print(sentence)
-                    print(output,self.nodes[output])
+
 
                 # assign_i2o[input] = output
                 # assign_o2i[output] = input
@@ -289,8 +290,8 @@ class Parser:
                 sentence = sentence.replace('\n','').strip()
                 # get the gate type
                 gate = sentence[:sentence.find('(')]
-                if sentence.count(' (')!=1 or len(gate.strip().split(' '))!=2:
-                    print('error sentence1:',sentence)
+                if (sentence.count(' (')!=1 or len(gate.strip().split(' '))!=2):
+                    if self.flag_log: print('error sentence1:',sentence)
                     if ' (' not in sentence:
                         continue
                     sub_sentence1 = sentence[:sentence.rfind(' (')]
@@ -320,7 +321,7 @@ class Parser:
                     io_nodes = self.get_moduleIOnodes(sentence)
 
                     if len(io_nodes)!=4:
-                        print('error sentence3:',sentence)
+                        if self.flag_log: print('error sentence3:',sentence)
                         continue
                     assert len(io_nodes) == 4
 
@@ -609,8 +610,8 @@ class Parser:
 
             #nodes_name.append((node,node_info.get('nicknames',None)))
 
-            if node_info['ntype'] in self.buf_types or node_info['ntype']=='output':
-                print("removing no-type PO:", node)
+            if (node_info['ntype'] in self.buf_types or node_info['ntype']=='output'):
+                if self.flag_log: print("removing no-type PO:", node)
                 continue
 
 
@@ -673,9 +674,9 @@ class Parser:
         # get the src_node list and dst_node lsit
         for eid, (src, dst, edict) in enumerate(self.edges):
             #print(src,dst)
-            if 'reg' in src and src.endswith('_q') and dst.endswith('_d') and src[:src.rfind('_')] == dst[:dst.rfind('_')]:
+            if self.flag_log and 'reg' in src and src.endswith('_q') and dst.endswith('_d') and src[:src.rfind('_')] == dst[:dst.rfind('_')]:
                 print('###',src, dst)
-            if node2nid.get(src,None) and self.nodes[src]['is_po']:
+            if self.flag_log and node2nid.get(src,None) and self.nodes[src]['is_po']:
                 print('***', src, dst)
 
             assert nodes_value[node2nid[dst]] not in [0,1]
@@ -722,8 +723,8 @@ class Parser:
         graph.edges['intra_module'].data['is_inv'] = th.tensor(is_inv[1], dtype=th.float)
         graph.edges['intra_gate'].data['is_inv'] = th.tensor(is_inv[0], dtype=th.float)
 
-
-        print('\t pre-filter: #node:{}, #edges:{}, {}'.format(graph.number_of_nodes(),
+        if self.flag_log:
+            print('\t pre-filter: #node:{}, #edges:{}, {}'.format(graph.number_of_nodes(),
                                                                graph.number_of_edges('intra_gate'),
                                                                graph.number_of_edges('intra_module')))
         # print('\t pre-filter: #node:{}, #edges:{}'.format(graph.number_of_nodes(),
@@ -814,7 +815,7 @@ class Parser:
             #if False:
             if (PO_label==0 and level>=2):
             #if (PO_label==0 and level>=2) or (PO_label==1 and level>=5) or (PO_label==2 and level>=10):
-                print('\t removing PO:',PO_name,PO_label,level)
+                if self.flag_log: print('\t removing PO:',PO_name,PO_label,level)
                 graph.ndata['is_po'][nid] = 0
             else:
                 remain_pos_idx.append(i)
@@ -822,7 +823,12 @@ class Parser:
         POs_name = filter_list(POs_name, remain_pos_idx)
         POs_nid = filter_list(POs_nid, remain_pos_idx)
 
-
+        PIs_delay = []
+        for node in PIs_name:
+            PIs_delay.append(self.pi_delay[self.nicknames.get(node, node)])
+        POs_label = []
+        for node in POs_name:
+            POs_label.append(self.po_labels[node])
 
         #print(graph.edges(etype='intra_module'))
         # src_m,dst_m = graph.edges(etype='intra_module')
@@ -854,10 +860,12 @@ class Parser:
         graph_info['PIs_name'] = PIs_name
         graph_info['design_name'] = self.design_name
         graph_info['nicknames'] = self.nicknames
+        graph_info['PIs_delay'] = PIs_delay
+        graph_info['POs_label'] = POs_label
 
-
-        print('\t post-filter: #node:{}, #edges:{}, {}'.format(graph.number_of_nodes(),graph.number_of_edges('intra_gate'),graph.number_of_edges('intra_module')))
-        print('\t #PO:{}'.format(len(POs_name)))
+        if self.flag_log:
+            print('\t post-filter: #node:{}, #edges:{}, {}'.format(graph.number_of_nodes(),graph.number_of_edges('intra_gate'),graph.number_of_edges('intra_module')))
+            print('\t #PO:{}'.format(len(POs_name)))
         # print(POs_name)
         # exit()
         # print('\t',graph_info)
@@ -866,9 +874,9 @@ class Parser:
 
     def parse(self):
         #self.pi_delay,self.po_labels,_ = parse_golden(os.path.join(self.design_path,'golden_0.txt'))
-        self.pi_delay, self.po_labels, _ = parse_golden(os.path.join(self.design_path, '{}_0'.format(self.design_name), 'golden.txt'))
-        for p, d in self.pi_delay.items():
-            assert d == 0, print("base case with non-zero input delay: {} {}".format(p, d))
+        self.pi_delay, self.po_labels, _ = parse_golden(self.golden_file)
+        # for p, d in self.pi_delay.items():
+        #     assert d == 0, print("base case with non-zero input delay: {} {}".format(p, d))
         if self.pi_delay is None:
             return None,None
         graph, graph_info = self.parse_verilog()
@@ -962,7 +970,7 @@ def main():
             # if int(design.split('_')[-1]) in [110,220,183,185,319,320,329,371,383,392,399]:
             #     continue
 
-            #if design not in [ 'aes128']: continue
+
             #if design  in [ 'ldpcenc', 'systemcaes','sha3', 'wb_conmax','oc_wb_dma','mc6809', 's15850', 'tv80', 'oc_mem_ctrl','ecg','y_dct']: continue
 
             #if design in ['sin','multiplier','div','sqrt','mem_ctrl','log2','y_huff','voter']: continue
@@ -979,7 +987,15 @@ def main():
             if not os.path.isdir(design_dir):
                 continue
             print("-----Parsing {}-----".format(design))
-            parser = Parser(design_dir)
+            if 'round7' in design_dir:
+                netlist_file = os.path.join(design_dir, '{}.v'.format(design))
+            else:
+                netlist_file = os.path.join(design_dir,'{}_case.v'.format(design))
+            base_golden_file = os.path.join(design_dir,'{}_0'.format(design),'golden.txt')
+
+            flag_log = False
+            parser = Parser(netlist_file,base_golden_file,flag_log)
+
             graph, graph_info = parser.parse()
             if graph is None or th.sum(graph.ndata['is_po']).item()==0:
                 continue
@@ -1000,13 +1016,13 @@ def main():
             for po, critical_pis in po_criticalPIs.items():
                 po_nid = graph_info['nname2nid'].get(po, -1)
                 if po_nid == -1:
-                    print('PO {} does not exist'.format(po))
+                    if flag_log: print('PO {} does not exist'.format(po))
                     continue
                 for pi, w in critical_pis:
                     if visited.get(pi, False):
                         continue
                     visited[pi] = True
-                    if graph_info['nicknames'].get(po,None)!=pi and graph_info['nname2nid'].get(pi, -1) == -1:
+                    if flag_log and graph_info['nicknames'].get(po,None)!=pi and graph_info['nname2nid'].get(pi, -1) == -1:
                         print('PI {} of PO {} does not exist'.format(pi, po))
 
 
@@ -1026,7 +1042,7 @@ def main():
                 #print('{}_{}'.format(design,idx))
                 #print(design_name,idx,po_labels)
                 if len(po_labels)!=len(graph_info['base_po_labels']):
-                    print(idx,len(po_labels),len(graph_info['base_po_labels']))
+                    if flag_log: print(idx,len(po_labels),len(graph_info['base_po_labels']))
                     #print(set(po_labels)-set(graph_info['base_po_labels'].keys()))
                     continue
 
@@ -1057,9 +1073,6 @@ def main():
                     wrong_pis = [pi for pi,w in critical_pis if graph_info['nname2nid'].get(pi,-1)==-1]
                     wrong_pis_all.extend(wrong_pis)
                     critical_pi_nids = [nid for nid in critical_pi_nids if nid!=-1]
-
-                    if 'g40' in wrong_pis:
-                        print(po)
 
 
                     critical_pi_w = [w for pi, w in critical_pis]

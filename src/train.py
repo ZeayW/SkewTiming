@@ -31,35 +31,13 @@ R2_score = R2Score().to(device)
 Loss = nn.MSELoss()
 Loss = nn.L1Loss()
 
-
-with open(os.path.join(options.data_savepath, 'ntype2id.pkl'), 'rb') as f:
-    ntype2id,ntype2id_gate,ntype2id_module = pickle.load(f)
+with open(options.ntype_file, 'rb') as f:
+    ntype2id, ntype2id_gate, ntype2id_module = pickle.load(f)
 num_gate_types = len(ntype2id_gate)
 num_gate_types -= 3
 num_module_types = len(ntype2id_module)
-# print(num_gate_types,num_module_types)
 print(ntype2id)
-# print(ntype2id,ntype2id_gate,ntype2id_module)
-# exit()
 
-data_path = options.data_savepath
-if data_path.endswith('/'):
-    data_path = data_path[:-1]
-data_file = os.path.join(data_path, 'data.pkl')
-if 'round7' in data_path:
-    split_file = os.path.join(data_path, 'split.pkl')
-    designs_group = None
-else:
-    split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-    with open('designs_group.pkl', 'rb') as f:
-        designs_group = pickle.load(f)
-
-with open(data_file, 'rb') as f:
-    data_all = pickle.load(f)
-    design_names = [d[1]['design_name'].split('_')[-1] for d in data_all]
-
-with open(split_file, 'rb') as f:
-    split_list = pickle.load(f)
 
 
 
@@ -74,8 +52,26 @@ def cat_tensor(t1,t2):
 
 # print(split_list)
 # exit()
-def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
+def load_data(usage,options):
     assert usage in ['train','val','test']
+
+    data_path = options.data_savepath
+    if data_path.endswith('/'):
+        data_path = data_path[:-1]
+    data_file = os.path.join(data_path, 'data.pkl')
+    if 'round7' in data_path:
+        split_file = os.path.join(data_path, 'split.pkl')
+        designs_group = None
+    else:
+        split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
+        with open('designs_group_new.pkl', 'rb') as f:
+            designs_group = pickle.load(f)
+    with open(data_file, 'rb') as f:
+        data_all = pickle.load(f)
+        design_names = [d[1]['design_name'].split('_')[-1] for d in data_all]
+
+    with open(split_file, 'rb') as f:
+        split_list = pickle.load(f)
 
     target_list = split_list[usage]
     target_list = [n.split('_')[-1] for n in target_list]
@@ -84,7 +80,7 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
 
     data = [d for i,d in enumerate(data_all) if design_names[i] in target_list]
     case_range = (0, 100)
-    if flag_quick:
+    if options.quick:
         if usage == 'train':
             case_range = (0,20)
         else:
@@ -92,7 +88,7 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
     print("------------Loading {}_data #{} {}-------------".format(usage,len(data),case_range))
 
     loaded_data = []
-    if flag_grouped:
+    if options.flag_group:
         loaded_data = {}
     for  graph,graph_info in data:
         #print(graph_info['design_name'])
@@ -100,7 +96,8 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
         #    continue
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
         if usage == 'test' and designs_group is None:
-            if len(graph_info['delay-label_pairs'][0][1]) <= 150:
+
+            if len(graph_info['delay-label_pairs'][0][1]) < 150:
                 continue
             if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
         #if graph_info['design_name'] not in ['s15850']: continue
@@ -145,7 +142,9 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
         graph_info['graph'] = graph
         #graph_info['PI_mask'] = PI_mask
         graph_info['delay-label_pairs'] = graph_info['delay-label_pairs'][case_range[0]:case_range[1]]
-        if flag_grouped:
+        #if options.flag_group:
+
+        if options.test_iter or usage=='test' and options.flag_group:
             if designs_group is None:
                 loaded_data[graph_info['design_name']] = loaded_data.get(graph_info['design_name'],[])
                 loaded_data[graph_info['design_name']].append(graph_info)
@@ -156,9 +155,6 @@ def load_data(usage,flag_quick=True,flag_inference=False,flag_grouped=False):
         else:
             loaded_data.append(graph_info)
 
-    batch_size = options.batch_size
-    if not flag_inference and (not options.flag_reverse or options.flag_path_supervise) and usage!='train':
-        batch_size = len(loaded_data)
 
 
     return loaded_data
@@ -191,7 +187,6 @@ def init_model(options):
                 flag_filter = options.flag_filter,
                 flag_reverse=options.flag_reverse,
                 flag_splitfeat=options.split_feat,
-                pi_choice=options.pi_choice,
                 agg_choice=options.agg_choice,
                 attn_choice=options.attn_choice,
                 flag_homo=options.flag_homo,
@@ -227,11 +222,11 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
 
         graph = data['graph']
         # collect the new edges from critical PIs to PO
-        #if flag_path:
-        new_edges[0].extend([nid + start_idx for nid in pi2po_edges[0]])
-        new_edges[1].extend([nid + start_idx for nid in pi2po_edges[1]])
-        if len(pi2po_edges)==3:
-            new_edges_weight.extend(pi2po_edges[2])
+        if flag_addedge:
+            new_edges[0].extend([nid + start_idx for nid in pi2po_edges[0]])
+            new_edges[1].extend([nid + start_idx for nid in pi2po_edges[1]])
+            if len(pi2po_edges)==3:
+                new_edges_weight.extend(pi2po_edges[2])
 
         if len(data['delay-label_pairs'][idx]) == 5:
             POs_criticalprob = data['delay-label_pairs'][idx][4]
@@ -278,7 +273,7 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
 
 
     
-def get_batched_data(graphs):
+def get_batched_data(graphs,po_batch_size=1024):
     po_batch_size = 1024
 
     sampled_graphs = dgl.batch(graphs)
@@ -346,8 +341,8 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
         temp_labels, temp_labels_hat = None, None
         POs_topo = None
 
-
         for i in range(0,len(test_data),batch_size):
+            #print(i,len(test_data),batch_size)
             idxs = list(range(i,min(i+batch_size,len(test_data))))
         # for batch, idxs in enumerate(test_idx_loader):
         #     idxs = idxs.numpy().tolist()
@@ -364,8 +359,9 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
 
             # print(num_cases)
             flag_r = options.flag_reverse or options.flag_path_supervise
+            po_batchsize =1024
+            sampled_graphs, graphs_info = get_batched_data(graphs,po_batchsize)
 
-            sampled_graphs, graphs_info = get_batched_data(graphs)
             for POs,POs_mask in graphs_info['POs_batches']:
                 POs_mask = th.tensor(POs_mask).to(device)
                 #print(len(POs),len(POs_mask))
@@ -377,7 +373,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                 if flag_r:
                     sampled_graphs = init_criticality_matrix(sampled_graphs,POs)
                 
-            
+
                 graphs_info['nodes_name'] = data['nodes_name']
                 #print(data['design_name'])
                 for j in range(num_cases):
@@ -550,6 +546,7 @@ def test(model,test_data,flag_reverse,batch_size):
             flag_r = flag_reverse or options.flag_path_supervise
 
             sampled_graphs, graphs_info = get_batched_data(graphs)
+
             for POs, POs_mask in graphs_info['POs_batches']:
                 POs_mask = th.tensor(POs_mask).to(device)
                 # print(len(POs),len(POs_mask))
@@ -566,8 +563,11 @@ def test(model,test_data,flag_reverse,batch_size):
                     flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
                     POs_label, PIs_delay, sampled_graphs,graphs_info = gather_data(sampled_data,sampled_graphs,graphs_info,j,flag_addedge)
 
+
                     POs_label = POs_label[POs_mask]
+
                     cur_labels_hat, prob_sum,prob_dev,_ = model(sampled_graphs, graphs_info)
+
 
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
                     labels = cat_tensor(labels,POs_label)
@@ -582,10 +582,12 @@ def test(model,test_data,flag_reverse,batch_size):
 
 
 def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=False,flag_infer=False,flag_save=False,save_file_dir=None):
+    print('Testing...')
     if flag_group:
         labels_hat_all, labels_all = None, None
         batch_sizes = [64, 32, 17, 8]
-        if len(test_data)!=4:
+        batch_sizes = [8, 32]
+        if len(test_data)!=2:
             batch_sizes = [1]*len(test_data)
         for i, (name, data) in enumerate(test_data.items()):
             torch.cuda.empty_cache()
@@ -618,9 +620,9 @@ def train(model):
     print(options)
     th.multiprocessing.set_sharing_strategy('file_system')
 
-    train_data = load_data('train',options.quick)
-    val_data = load_data('val',options.quick)
-    test_data = load_data('test',options.quick,flag_grouped=options.flag_group)
+    train_data = load_data('train',options)
+    val_data = load_data('val',options)
+    test_data = load_data('test',options)
     print("Data successfully loaded")
 
     train_idx_loader = get_idx_loader(train_data,options.batch_size)
@@ -646,7 +648,7 @@ def train(model):
         flag_reverse = options.flag_reverse
         Loss = nn.L1Loss()
         if options.flag_alternate:
-            if epoch%3!=0:
+            if epoch%2!=0:
                 flag_path = False
             # if epoch%3==0:
             #     flag_reverse = False
@@ -759,6 +761,10 @@ def train(model):
 
 
 if __name__ == "__main__":
+
+
+
+
     seed = random.randint(1, 10000)
     init(seed)
     if options.test_iter:
@@ -770,83 +776,49 @@ if __name__ == "__main__":
         input_options = options
         options = th.load('../checkpoints/{}/options.pkl'.format(options.checkpoint))
         options.data_savepath = input_options.data_savepath
-
-
-        options.target_residual = input_options.target_residual
-        #options.flag_filter = input_options.flag_filter
-        #options.flag_reverse = input_options.flag_reverse
-        #options.pi_choice = input_options.pi_choice
+        options.checkpoint = input_options.checkpoint
+        options.test_iter = input_options.test_iter
+        options.quick = input_options.quick
         options.batch_size = input_options.batch_size
         options.gpu = input_options.gpu
         options.flag_path_supervise = input_options.flag_path_supervise
         #options.flag_reverse = input_options.flag_reverse
-        options.pi_choice = input_options.pi_choice
-        options.quick = input_options.quick
-        options.flag_delay_pd = input_options.flag_delay_pd
+
         options.inv_choice = input_options.inv_choice
         options.remove01 = input_options.remove01
         options.flag_baseline = input_options.flag_baseline
         options.global_out_choice = input_options.global_out_choice
         options.flag_group = input_options.flag_group
-        options.flag_degree = input_options.flag_degree
 
 
-        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
+
+        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '-' not in f and '_' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
         log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
         with tee.StdoutTee(stdout_f):
-            print(input_options.test_iter)
             print(options)
             # exit()
             model = init_model(options)
             model.flag_train = True
-            model.flag_reverse = options.flag_reverse
-            model.flag_path_supervise = options.flag_path_supervise
             flag_inference = True
-
-            new_out_dim = 0
-            if options.global_info_choice in [0, 1, 2]:
-                new_out_dim += options.hidden_dim
-            elif options.global_info_choice in [3, 4, 5]:
-                new_out_dim += options.hidden_dim + 1
-            elif options.global_info_choice in [6]:
-                new_out_dim += options.hidden_dim + 2
-            elif options.global_info_choice == 7:
-                new_out_dim += options.hidden_dim + 2
-            elif options.global_info_choice == 8:
-                new_out_dim += options.hidden_dim + 1 + num_module_types + num_gate_types
-            if options.global_cat_choice in [0,3,4]:
-                new_out_dim += 1
-            elif options.global_cat_choice in [1,5,6]:
-                new_out_dim += options.hidden_dim
-
-            if options.flag_reverse and new_out_dim != 0:
-                model.mlp_out_new = MLP(new_out_dim, options.hidden_dim, options.hidden_dim,1,negative_slope=0.1)
-                if options.global_out_choice == 1:
-                    model.mlp_out_new2 = MLP(new_out_dim, options.hidden_dim, options.hidden_dim, 1, negative_slope=0.1)
-
-            if options.global_cat_choice in [4, 6]:
-                model.mlp_w = MLP(1, 32, 1)
 
             #if True:
             # if options.flag_reverse and not options.flag_path_supervise:
             #     if options.pi_choice == 0: model.mlp_global_pi = MLP(2, int(options.hidden_dim / 2), options.hidden_dim)
             #     model.mlp_out_new = MLP(options.out_dim, options.hidden_dim, 1)
             model = model.to(device)
-            model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu)))
-            usages = ['train','test','val']
-            usages = ['test']
-
-
-            batch_sizes = [64,32,17,8]
+            model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu" ))
+            usages = ['train','test']
+            #usages = ['test']
 
             for usage in usages:
                 flag_save = True
                 flag_infer = True
                 save_file_dir = options.checkpoint
-                test_data = load_data(usage,options.quick,flag_inference,options.flag_group)
-
+                test_data = load_data(usage,options)
+                if len(test_data)==0:
+                    continue
                 #test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.flag_reverse)
                 test_all(test_data,model,options.batch_size,options.flag_reverse,'test',options.flag_group,flag_infer,flag_save,save_file_dir)
                 # if options.flag_group:
@@ -880,49 +852,10 @@ if __name__ == "__main__":
             pass
         with tee.StdoutTee(stdout_f), tee.StderrTee(stderr_f):
             model = init_model(options)
-            # if options.pretrain_dir is not None:
-            #     model.load_state_dict(th.load(options.pretrain_dir,map_location='cuda:{}'.format(options.gpu)))
-            #model.mlp_out_new = MLP(options.hidden_dim + 1, options.hidden_dim, 1)
-
-            # if options.pretrain_dir is not None:
-            #     model.load_state_dict(th.load(options.pretrain_dir,map_location='cuda:{}'.format(options.gpu)))
-
-            new_out_dim = 0
-            if options.global_info_choice in [0,1,2]:
-                new_out_dim += options.hidden_dim
-            elif options.global_info_choice in [3,4,5]:
-                new_out_dim += options.hidden_dim + 1
-            elif options.global_info_choice in [6]:
-                new_out_dim += options.hidden_dim + 2
-            elif options.global_info_choice in [7,8]:
-                new_out_dim += options.hidden_dim + 64 + 1
-
-            if options.global_cat_choice in [0,3,4]:
-                new_out_dim += 1
-            elif options.global_cat_choice in [1,5]:
-                new_out_dim += options.hidden_dim
-
-
-            if options.flag_reverse and new_out_dim!=0:
-                model.mlp_out_new = MLP(new_out_dim, options.hidden_dim, options.hidden_dim,1,negative_slope=0.1)
-
-            # if options.global_cat_choice in [4,5]:
-            #     model.mlp_w = MLP(1,32,1)
 
             if options.pretrain_dir is not None:
-                model.load_state_dict(th.load(options.pretrain_dir,map_location='cuda:{}'.format(options.gpu)))
+                model.load_state_dict(th.load(options.pretrain_dir,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu"))
 
-            model.mlp_w = None
-            if options.global_cat_choice in [4,6]:
-                model.mlp_w = MLP(1,32,1)
-
-            if options.global_out_choice == 1:
-                model.mlp_out_new2 = MLP(new_out_dim, options.hidden_dim, options.hidden_dim, 1, negative_slope=0.1)
-
-            if options.global_info_choice == 8:
-                model.mlp_pe = MLP(64,64,64)
-            # if options.global_cat_choice in [4,5]:
-            #     model.mlp_w = MLP(1,32,1)
 
             model = model.to(device)
 
@@ -933,7 +866,7 @@ if __name__ == "__main__":
         print('No checkpoint is specified. abandoning all model checkpoints and logs')
         model = init_model(options)
         if options.pretrain_dir is not None:
-            model.load_state_dict(th.load(options.pretrain_dir,map_location='cuda:{}'.format(options.gpu)))
+            model.load_state_dict(th.load(options.pretrain_dir,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu"))
         if options.flag_reverse:
             if options.pi_choice == 0: model.mlp_global_pi = MLP(2, int(options.hidden_dim / 2), options.hidden_dim)
             model.mlp_out_new = MLP(options.out_dim, options.hidden_dim, 1)

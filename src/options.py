@@ -3,6 +3,7 @@ import argparse
 
 def get_options(args=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument('--ntype_file',type=str,default='./ntype2id.pkl')
     parser.add_argument('--flag_group',action='store_true')
     parser.add_argument('--flag_baseline',type=int,default=-1,help='choose the model, -1: ours; 0:ACCNN; 1:Graph Transformer; 2: Path-based')
     parser.add_argument('--flag_alternate',action='store_true')
