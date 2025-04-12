@@ -539,19 +539,28 @@ class TimeConv(nn.Module):
 
                 #print(th.sum(nodes_emb[graph.ndata['is_pi']==0][nodes_emb[[graph.ndata['is_pi']==0]]<0]))
 
-                nodes_prob_tr = th.transpose(nodes_prob,0,1)
 
-                h_global = th.matmul(nodes_prob_tr,nodes_emb)
 
-                #h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
 
                 PIs_mask = graph.ndata['is_pi'] == 1
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
 
+
+
+                info_mask = graph.ndata['is_pi'] == 0
+                nodes_prob = nodes_prob[info_mask]
+                nodes_emb = graph.ndata['h'][info_mask]
+
+                nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
+                h_global = th.matmul(nodes_prob_tr, nodes_emb)
+
+                # h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
+
+
                 if self.global_info_choice == 2:
                     h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
                     h_global =h_global+h_pi
-                elif self.global_info_choice == 3:
+                elif self.global_info_choice in [3]:
                     h_pi = th.matmul(PIs_prob, graph.ndata['delay'][PIs_mask])
                     h_global = th.cat((h_global, h_pi), dim=1)
                 elif self.global_info_choice in [4]:
@@ -568,13 +577,7 @@ class TimeConv(nn.Module):
 
                     h_pi = th.matmul(PIs_prob, graph.ndata['delay'][PIs_mask])
                     h_global = th.cat((h_global, h_d,h_pi), dim=1)
-                elif self.global_info_choice in [7,8]:
-                    nodes_delay, nodes_inputDelay = self.prop_delay(graph, graph_info)
-                    h_d = nodes_inputDelay[POs]
-                    h_p =  th.matmul(nodes_prob_tr,graph.ndata['PE'])
-                    if self.global_info_choice == 8:
-                        h_p = self.mlp_pe(h_p)
-                    h_global = th.cat((h_global, h_d,h_p), dim=1)
+
 
 
                 # print(th.sum(h_global[h_global<0]))
