@@ -64,7 +64,7 @@ def load_data(usage,options):
         designs_group = None
     else:
         split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-        with open('designs_group_new.pkl', 'rb') as f:
+        with open('designs_group.pkl', 'rb') as f:
             designs_group = pickle.load(f)
     with open(data_file, 'rb') as f:
         data_all = pickle.load(f)
@@ -88,7 +88,7 @@ def load_data(usage,options):
     print("------------Loading {}_data #{} {}-------------".format(usage,len(data),case_range))
 
     loaded_data = []
-    if options.flag_group:
+    if options.test_iter or usage=='test' and options.flag_group:
         loaded_data = {}
     for  graph,graph_info in data:
         #print(graph_info['design_name'])
@@ -273,8 +273,8 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
 
 
     
-def get_batched_data(graphs,po_batch_size=1024):
-    po_batch_size = 1024
+def get_batched_data(graphs,po_batch_size=2048):
+
 
     sampled_graphs = dgl.batch(graphs)
     sampled_graphs = sampled_graphs.to(device)
