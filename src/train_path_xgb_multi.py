@@ -57,8 +57,11 @@ if 'round7' in data_path:
     designs_group = None
 else:
     split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-    with open('designs_group.pkl', 'rb') as f:
+    with open('designs_group_new.pkl', 'rb') as f:
         designs_group = pickle.load(f)
+
+# print(len(designs_group))
+
 
 with open(split_file, 'rb') as f:
     split_list = pickle.load(f)
@@ -85,16 +88,18 @@ def gather_data(data,index,flag_train):
         critical_path_info = critical_paths[po_idx]
         feat_global = []
         feat_global.append(critical_path_info['rank'])
-        feat_global.append(critical_path_info['rank_ratio'])
-        feat_global.append(rand_paths_info['num_nodes'])
+        # feat_global.append(critical_path_info['rank_ratio'])
+        # feat_global.append(rand_paths_info['num_nodes'])
         # feat_global.append(rand_paths_info['num_seq'])
         # feat_global.append(rand_paths_info['num_cmb'])
         feat_global.append(rand_paths_info['num_reg'])
 
         paths_info = [critical_path_info]
+
         if not flag_train:
-            shuffle(rand_paths_info['paths_rd'])
-            paths_info.extend(rand_paths_info['paths_rd'])
+            paths_info.extend(rand_paths_info['paths_rd'][:50])
+            # if len(critical_path_info['path'])>5:
+            #     paths_info.extend(rand_paths_info['paths_rd'][:10])
 
         # if len(paths_info)>5:
         #     print(data['design_name'],len(paths_info))
@@ -137,7 +142,7 @@ def gather_data(data,index,flag_train):
 
 # print(split_list)
 # exit()
-def load_data(usage,flag_grouped=False,flag_quick=True):
+def load_data(usage,flag_grouped=False,flag_quick=True,flag_test=False):
 
     assert usage in ['train','val','test']
 
@@ -157,26 +162,29 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
     labels,feats = {}, {}
 
     labels, feat = [],[]
-    if usage=='train' or not flag_grouped:
+    if not flag_test or not flag_grouped:
         loaded_data = []
     else:
         loaded_data = {}
 
     for data in dataset:
         if usage == 'test' and designs_group is None:
+            #if data['design_name'] not in ['aes128']: continue
             if len(gather_data(data,0,usage=='train')[0]) <= 150:
                 continue
             if data['design_name'] in [ 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
         # if data['design_name'] not in ['y_quantizer']: continue
 
+        data['critical_path'][50] = data['critical_path'][0]
+
         print(data['design_name'])
         end_idx = min(case_range[1],len(data['critical_path']))
         for i in range(case_range[0],end_idx):
-            cur_label,cur_feat = gather_data(data,i,usage=='train')
+            cur_label,cur_feat = gather_data(data,i,not flag_test)
             # labels.extend(cur_label)
             # feat.extend(cur_feat)
             #
-            if usage=='train':
+            if not flag_test:
                 for j in range(len(cur_feat)):
                     labels.extend(cur_label)
                     feat.extend(cur_feat)
@@ -194,7 +202,7 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
                 labels.extend(cur_label)
                 feat.extend(cur_feat)
 
-    if usage=='train' or not flag_grouped:
+    if not flag_test or not flag_grouped:
         loaded_data = [np.array(labels),np.array(feat)]
     # else:
     #     for group,data in loaded_data.items():
@@ -277,7 +285,7 @@ def train():
     th.multiprocessing.set_sharing_strategy('file_system')
 
     train_label,train_feat = load_data('train',False,options.quick)
-    test_data = load_data('test',options.flag_group,options.quick)
+    test_data = load_data('test',options.flag_group,options.quick,flag_test=True)
 
     print(train_feat.shape)
     train_feat = pd.DataFrame(train_feat)
@@ -307,17 +315,19 @@ if __name__ == "__main__":
         with open(model_save_path,'rb') as f:
             model = pickle.load(f)
 
-        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '_' not in f]
+        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '_' not in f and '-' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
         log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
         with tee.StdoutTee(stdout_f):
 
-            usages = ['train','test','val']
-            usages = ['test']
+            usages = ['train','test']
+            #usages = ['test']
             for usage in usages:
-                data = load_data(usage, options.flag_group, options.quick)
-                test_all(data,model,usage,options.flag_group)
+                data = load_data(usage, options.flag_group, options.quick,flag_test=True)
+                if len(data)==0:
+                    continue
+                test_all(data,model,flag_group=options.flag_group)
 
     elif options.checkpoint:
         print('saving logs and models to ../checkpoints/{}'.format(options.checkpoint))

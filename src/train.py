@@ -142,8 +142,9 @@ def load_data(usage,options):
 
         graph_info['graph'] = graph
         #graph_info['PI_mask'] = PI_mask
+        graph_info['delay-label_pairs'][50] = graph_info['delay-label_pairs'][0]
         graph_info['delay-label_pairs'] = graph_info['delay-label_pairs'][case_range[0]:case_range[1]]
-        #graph_info['delay-label_pairs'][1] = graph_info['delay-label_pairs'][0]
+
         #if options.flag_group:
 
         if options.test_iter or usage=='test' and options.flag_group:

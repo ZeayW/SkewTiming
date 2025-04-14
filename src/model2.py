@@ -597,7 +597,7 @@ class TimeConv(nn.Module):
 
                 # print(th.sum(h_global[h_global<0]))
                 # exit()
-                #h_global = self.activation(h_global)
+                # h_global = self.activation(h_global)
 
                 #h_global = (1/th.sum(nodes_prob_tr,dim=1)).unsqueeze(1) * h_global
 
