@@ -64,8 +64,9 @@ def load_data(usage,options):
         designs_group = None
     else:
         split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-        with open('designs_group.pkl', 'rb') as f:
+        with open('designs_group_new.pkl', 'rb') as f:
             designs_group = pickle.load(f)
+        #designs_group = None
     with open(data_file, 'rb') as f:
         data_all = pickle.load(f)
         design_names = [d[1]['design_name'].split('_')[-1] for d in data_all]
@@ -142,6 +143,7 @@ def load_data(usage,options):
         graph_info['graph'] = graph
         #graph_info['PI_mask'] = PI_mask
         graph_info['delay-label_pairs'] = graph_info['delay-label_pairs'][case_range[0]:case_range[1]]
+        #graph_info['delay-label_pairs'][1] = graph_info['delay-label_pairs'][0]
         #if options.flag_group:
 
         if options.test_iter or usage=='test' and options.flag_group:
@@ -648,7 +650,7 @@ def train(model):
         flag_reverse = options.flag_reverse
         Loss = nn.L1Loss()
         if options.flag_alternate:
-            if epoch%2!=0:
+            if epoch%3!=0:
                 flag_path = False
             # if epoch%3==0:
             #     flag_reverse = False
@@ -809,7 +811,7 @@ if __name__ == "__main__":
             #     model.mlp_out_new = MLP(options.out_dim, options.hidden_dim, 1)
             model = model.to(device)
             model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu" ))
-            usages = ['train','test']
+            usages = ['test','train']
             #usages = ['test']
 
             for usage in usages:

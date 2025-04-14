@@ -89,17 +89,20 @@ class TimeConv(nn.Module):
         self.agg_choice = agg_choice
         self.attn_choice = attn_choice
         self.mlp_pi = MLP(4, int(hidden_dim / 2), hidden_dim)
+        #self.linear_pi = th.nn.Linear(4, hidden_dim)
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
 
         new_out_dim = 0
-        if self.global_info_choice in [0, 1, 2]:
+        if self.global_info_choice in [0, 1]:
             new_out_dim += self.hidden_dim
-        elif self.global_info_choice in [3, 4, 5]:
+        elif self.global_info_choice==2:
+            new_out_dim += 2*self.hidden_dim
+        elif self.global_info_choice in [3, 4, 5,7]:
             new_out_dim += self.hidden_dim + 1
         elif self.global_info_choice in [6]:
             new_out_dim += self.hidden_dim + 2
-        elif self.global_info_choice == 7:
-            new_out_dim += self.hidden_dim + 2
+        elif  self.global_info_choice in [8]:
+            new_out_dim += 2*hidden_dim + 1
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
         elif self.global_cat_choice in [1, 5, 7]:
@@ -371,6 +374,9 @@ class TimeConv(nn.Module):
         #h = nodes.data['delay']
         h = th.cat((nodes.data['delay'],nodes.data['value']),dim=1)
         h = self.mlp_pi(h)
+        #h = self.linear_pi(h)
+
+        h = self.activation(h)
         #mask = nodes.data['is_po'].squeeze() != 1
         #h[mask] = self.activation(h[mask])
 
@@ -548,18 +554,19 @@ class TimeConv(nn.Module):
 
 
                 info_mask = graph.ndata['is_pi'] == 0
-                nodes_prob = nodes_prob[info_mask]
-                nodes_emb = graph.ndata['h'][info_mask]
+                # nodes_prob = nodes_prob[info_mask]
+                # nodes_emb = graph.ndata['h'][info_mask]
 
                 nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
                 h_global = th.matmul(nodes_prob_tr, nodes_emb)
 
-                # h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
+                #h_global = self.activation(h_global)
+                #h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
 
 
                 if self.global_info_choice == 2:
                     h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
-                    h_global =h_global+h_pi
+                    h_global = th.cat(h_global,h_pi,dim=1)
                 elif self.global_info_choice in [3]:
                     h_pi = th.matmul(PIs_prob, graph.ndata['delay'][PIs_mask])
                     h_global = th.cat((h_global, h_pi), dim=1)
@@ -577,8 +584,16 @@ class TimeConv(nn.Module):
 
                     h_pi = th.matmul(PIs_prob, graph.ndata['delay'][PIs_mask])
                     h_global = th.cat((h_global, h_d,h_pi), dim=1)
+                elif self.global_info_choice == 7:
+                    maxPI_idx = th.argmax(PIs_prob,dim=1)
+                    maxPI_delay =graph.ndata['delay'][PIs_mask][maxPI_idx]
+                    h_global = th.cat((h_global, maxPI_delay), dim=1)
 
-
+                elif self.global_info_choice == 8:
+                    maxPI_idx = th.argmax(PIs_prob,dim=1)
+                    maxPI_delay =graph.ndata['delay'][PIs_mask][maxPI_idx]
+                    h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
+                    h_global = th.cat((h_global, h_pi,maxPI_delay), dim=1)
 
                 # print(th.sum(h_global[h_global<0]))
                 # exit()
