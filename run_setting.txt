@@ -1,22 +1,28 @@
-#1. find an available gpu
-sidle
+#1. set up the python environment
+  conda create --name nuatimer python==3.10.12
+  pip install  dgl -f https://data.dgl.ai/wheels/torch-2.1/cu118/repo.html
+  pip install matplotlib
+  pip install torchmetrics
+  pip install numpy==1.26.4
+  pip unistall torch
+  pip install torch==2.1.0+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
 
-# 1. get the gpu
-srun -w [gpu_name] -p gpu_24h --gres=gpu:1 --pty bash
+#2. activate the python environment
+conda activate nuatimer
 
-# 2. activate the python environment
-conda activate dgl_3090
-
-#4. download the dataset, and unzip it under the rawdata directory
+#3. download the dataset, and unzip it under the rawdata directory
 mkdir rawdata; cd rawdata; unzip ...
 
-# 3. run the data generation script
-python parser.py --rawdata_path [path of the rawdata] --data_savepath [path to save the generated dataset]
+#4. run the data generation script
+python parser.py --rawdata_path [path of the rawdata] --data_savepath [path to save the generated dataset] 
 (an example: python parser.py --rawdata_path ../rawdata/dir_in_level_0 --data_savepath ../datasets/dir_in_level_0)
 
-4. run the training script
-python train.py --data_savepath [path of the generated dataset] --checkpoint [path to save the results]
-(an example: python train.py --data_savepath ../datasets/dir_in_level_0 --checkpoint ../checkpoints/example1)
+#5. run the training script
+python train.py --data_savepath  [path of the generated dataset] --checkpoint [path to save the trained model and logs] --flag_attn --attn_choice 0 --gpu 0 --hidden_dim 128 --batch_size 16 --flag_r --flag_p --flag_al -flag_width --global_info 3 --global_cat 1
+
+
+#6. run the testing script
+python train.py --data_savepath  [path of the test dataset] --checkpoint [path to trained model] --gpu 0 --batch_size 16 --test_iter xx
 
 
 
