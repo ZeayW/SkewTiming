@@ -1,5 +1,6 @@
 #1. set up the python environment
   conda create --name nuatimer python==3.10.12
+  conda activate nuatimer
   pip install  dgl -f https://data.dgl.ai/wheels/torch-2.1/cu118/repo.html
   pip install matplotlib
   pip install torchmetrics
