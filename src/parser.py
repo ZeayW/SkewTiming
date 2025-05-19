@@ -1155,7 +1155,7 @@ def main():
         'train': [g_info['design_name'] for g, g_info in data_train],
         'test': [g_info['design_name'] for g, g_info in data_test],
         'val': [g_info['design_name'] for g, g_info in data_val]}
-    data_list = {'train': [], 'val': [], 'test': [g_info['design_name'] for g, g_info in dataset]}
+    #data_list = {'train': [], 'val': [], 'test': [g_info['design_name'] for g, g_info in dataset]}
     print('#train:{}, #val:{}, #test:{}'.format(len(data_train),len(data_val),len(data_test)))
 
 
