@@ -59,14 +59,16 @@ def load_data(usage,options):
     if data_path.endswith('/'):
         data_path = data_path[:-1]
     data_file = os.path.join(data_path, 'data.pkl')
-    if 'round7' in data_path:
-        split_file = os.path.join(data_path, 'split.pkl')
-        designs_group = None
-    else:
-        split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-        with open('designs_group_new.pkl', 'rb') as f:
-            designs_group = pickle.load(f)
-        #designs_group = None
+    # if 'round7' in data_path:
+    #     split_file = os.path.join(data_path, 'split.pkl')
+    #     designs_group = None
+    # else:
+    #     split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
+    #     with open('designs_group_new.pkl', 'rb') as f:
+    #         designs_group = pickle.load(f)
+
+    designs_group = None
+    split_file = os.path.join(data_path, 'split.pkl')
     with open(data_file, 'rb') as f:
         data_all = pickle.load(f)
         design_names = [d[1]['design_name'].split('_')[-1] for d in data_all]
@@ -77,7 +79,7 @@ def load_data(usage,options):
     target_list = split_list[usage]
     target_list = [n.split('_')[-1] for n in target_list]
     #print(target_list[:10])
-
+    print(split_list,target_list)
 
     data = [d for i,d in enumerate(data_all) if design_names[i] in target_list]
     case_range = (0, 100)
@@ -96,13 +98,7 @@ def load_data(usage,options):
         #if int(graph_info['design_name'].split('_')[-1]) in [54, 96, 131, 300, 327, 334, 397]:
         #    continue
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
-        if usage == 'test' and designs_group is None:
 
-            if len(graph_info['delay-label_pairs'][0][1]) < 150:
-                continue
-            if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
-        #if graph_info['design_name'] not in ['s15850']: continue
-        
         if options.flag_homo:
             graph = heter2homo(graph)
         if options.remove01:
@@ -117,17 +113,10 @@ def load_data(usage,options):
         graph.ndata['feat'] = graph.ndata['ntype']
         graph.ndata['feat'] = graph.ndata['ntype'][:,3:]
 
-
-        # print(th.sum(graph.ndata['value'][:,0])+th.sum(graph.ndata['value'][:,1])+th.sum(graph.ndata['is_pi'])+th.sum(graph.ndata['feat']),th.sum(graph.ndata['ntype']))
-
-        #graph.ndata['degree'] = graph.ndata['width']
-
         graph.ndata['feat_module'] = graph.ndata['ntype_module']
         graph.ndata['feat_gate'] = graph.ndata['ntype_gate'][:,3:]
-        graph_info['POs_feat'] = graph_info['POs_level_max'].unsqueeze(-1)
         graph.ndata['h'] = th.ones((graph.number_of_nodes(), options.hidden_dim), dtype=th.float)
-        graph.ndata['PO_feat'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.float)
-        graph.ndata['PO_feat'][graph.ndata['is_po']==1] = graph_info['POs_feat']
+
 
         #print(graph_info['design_name'],len(graph_info['delay-label_pairs']))
         if len(graph_info['delay-label_pairs'][0][0])!= len(graph.ndata['is_pi'][graph.ndata['is_pi'] == 1]):
@@ -141,11 +130,8 @@ def load_data(usage,options):
             graph = add_newEtype(graph,'pi2po',([],[]),{})
 
         graph_info['graph'] = graph
-        #graph_info['PI_mask'] = PI_mask
         graph_info['delay-label_pairs'][50] = graph_info['delay-label_pairs'][0]
         graph_info['delay-label_pairs'] = graph_info['delay-label_pairs'][case_range[0]:case_range[1]]
-
-        #if options.flag_group:
 
         if options.test_iter or usage=='test' and options.flag_group:
             if designs_group is None:
@@ -171,30 +157,19 @@ def get_idx_loader(data,batch_size):
 
 def init_model(options):
     if options.flag_baseline == -1:
-        model = TimeConv(
+        model = BPN(
                 infeat_dim1=num_gate_types,
                 infeat_dim2=num_module_types,
                 hidden_dim=options.hidden_dim,
-                global_out_choice=options.global_out_choice,
                 global_cat_choice=options.global_cat_choice,
                 global_info_choice= options.global_info_choice,
-                inv_choice= options.inv_choice,
                 flag_degree=options.flag_degree,
                 flag_width=options.flag_width,
-                flag_delay_pd=options.flag_delay_pd,
-                flag_delay_m=options.flag_delay_m,
-                flag_delay_g=options.flag_delay_g,
-                flag_delay_pi=options.flag_delay_pi,
-                flag_ntype_g=options.flag_ntype_g,
                 flag_path_supervise=options.flag_path_supervise,
-                flag_filter = options.flag_filter,
                 flag_reverse=options.flag_reverse,
                 flag_splitfeat=options.split_feat,
                 agg_choice=options.agg_choice,
                 attn_choice=options.attn_choice,
-                flag_homo=options.flag_homo,
-                flag_global=options.flag_global,
-                flag_attn=options.flag_attn
             ).to(device)
     elif  options.flag_baseline == 0:
         model = ACCNN(infeat_dim=num_gate_types+num_module_types,
@@ -277,7 +252,7 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
 
     
 def get_batched_data(graphs,po_batch_size=2048):
-
+    # po_batch_size = 4096
 
     sampled_graphs = dgl.batch(graphs)
     sampled_graphs = sampled_graphs.to(device)
@@ -332,24 +307,13 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
     prob_file = os.path.join(save_path, 'POs_criticalprob3_{}.pkl'.format(usage))
     labels_file = os.path.join(save_path, 'labels_hat3_{}.pkl'.format(usage))
     labels_file2 = os.path.join(save_path, 'labels_{}.pkl'.format(usage))
-    data_file = os.path.join(save_path, 'data_{}.pkl'.format(usage))
 
-    new_dataset = []
-
-    #model.flag_train = False
     with ((th.no_grad())):
-        total_num, total_loss, total_r2 = 0, 0.0, 0
         labels,labels_hat = None,None
         POs_criticalprob = None
-        temp_labels, temp_labels_hat = None, None
-        POs_topo = None
 
         for i in range(0,len(test_data),batch_size):
-            #print(i,len(test_data),batch_size)
             idxs = list(range(i,min(i+batch_size,len(test_data))))
-        # for batch, idxs in enumerate(test_idx_loader):
-        #     idxs = idxs.numpy().tolist()
-            abnormal_POs = {}
             sampled_data = []
             num_cases = 100
             graphs = []
@@ -388,44 +352,6 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
 
                     cur_labels_hat, prob_sum,prob_dev,cur_POs_criticalprob = model(sampled_graphs, graphs_info)
 
-                    ratio = cur_labels_hat[POs_label!=0] / POs_label[POs_label!=0]
-                    # error_mask = ratio>10
-                    # error_pos = POs[POs_label.squeeze(1)!=0][error_mask].cpu().numpy().tolist()
-                    # erro_pos_name = [data['nodes_name'][n] for n in error_pos]
-                    # error_l = POs_label[POs_label!=0][error_mask].cpu().numpy().tolist()
-                    # error_l = [n for n in error_l]
-                    # error_lh = cur_labels_hat[POs_label!=0][error_mask].cpu().numpy().tolist()
-                    # error_lh = [round(n, 2) for n in error_lh]
-                    # if len(error_pos)!=0:
-                    #     print(j)
-                    #     print(list(zip(error_pos,erro_pos_name,error_l,error_lh)))
-
-
-                        # nodes_name = data['nodes_name']
-                        # po_nid = error_pos[0]
-                        # cur_nids = Queue()
-                        # cur_nids.put(po_nid)
-                        # all = []
-                        # homo_g = sampled_graphs
-                        #
-                        # visited = {}
-                        # while cur_nids.qsize()>0:
-                        #     cur_nid = cur_nids.get()
-                        #     if not visited.get(cur_nid,False):
-                        #         visited[cur_nid] = True
-                        #
-                        #         preds = homo_g.predecessors(cur_nid)
-                        #         all.append(cur_nid)
-                        #         #print(cur_nid,nodes_name[cur_nid])
-                        #         for n in preds:
-                        #             if not visited.get(n,False):
-                        #                 cur_nids.put(n.item())
-                        #
-                        # fanin_nodes = [nodes_name[n] for n in all]
-                        # print(set(fanin_nodes))
-                        # print(set(POs_name).intersection(fanin_nodes))
-                    # if j==20: exit()
-
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
 
                     labels = cat_tensor(labels,POs_label)
@@ -446,7 +372,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
 
 
 
-        # labels_hat[labels_hat>30] = 30
+        labels_hat[labels_hat>30] = 30
         labels_hat[labels_hat <0] = 0
 
 
@@ -653,16 +579,6 @@ def train(model):
         if options.flag_alternate:
             if epoch%3!=0:
                 flag_path = False
-            # if epoch%3==0:
-            #     flag_reverse = False
-            #     Loss = nn.L1Loss()
-            # else:
-            #     flag_path = False
-            #     Loss = nn.MSELoss()
-            #     if options.flag_reverse:
-            #         train_idx_loader = get_idx_loader(train_data, options.batch_size )
-            #     else:
-            #         train_idx_loader = get_idx_loader(train_data, options.batch_size*2)
 
         model.flag_path_supervise = flag_path
         model.flag_reverse = flag_reverse
@@ -745,16 +661,10 @@ def train(model):
                         sampled_graphs.remove_edges(sampled_graphs.edges('all',etype='pi2po')[2],etype='pi2po')
 
         torch.cuda.empty_cache()
-        model.flag_train = False
-        # _,_,val_loss, val_r2,val_mape,val_min_ratio,val_max_ratio = test(model, val_data,flag_reverse or flag_path)
-        # _,_,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio = test(model,test_data,flag_reverse or flag_path)
-
-        model.flag_train = True
-        torch.cuda.empty_cache()
         print('End of epoch {}'.format(epoch))
         val_r2,val_mape = test_all(val_data,model,options.batch_size,usage='val',flag_reverse=flag_reverse or flag_path)
-        test_r2, test_mape = test_all(test_data,model,options.batch_size,usage='test',flag_reverse=flag_reverse or flag_path,flag_group='True')
-        model.flag_train = True
+        test_r2, test_mape = test_all(test_data,model,options.batch_size,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
+
         torch.cuda.empty_cache()
         if options.checkpoint:
             save_path = '../checkpoints/{}'.format(options.checkpoint)
@@ -787,7 +697,6 @@ if __name__ == "__main__":
         options.flag_path_supervise = input_options.flag_path_supervise
         #options.flag_reverse = input_options.flag_reverse
 
-        options.inv_choice = input_options.inv_choice
         options.remove01 = input_options.remove01
         options.flag_baseline = input_options.flag_baseline
         options.global_out_choice = input_options.global_out_choice
@@ -806,10 +715,6 @@ if __name__ == "__main__":
             model.flag_train = True
             flag_inference = True
 
-            #if True:
-            # if options.flag_reverse and not options.flag_path_supervise:
-            #     if options.pi_choice == 0: model.mlp_global_pi = MLP(2, int(options.hidden_dim / 2), options.hidden_dim)
-            #     model.mlp_out_new = MLP(options.out_dim, options.hidden_dim, 1)
             model = model.to(device)
             model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu" ))
             usages = ['test','train']
@@ -824,25 +729,6 @@ if __name__ == "__main__":
                     continue
                 #test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.flag_reverse)
                 test_all(test_data,model,options.batch_size,options.flag_reverse,'test',options.flag_group,flag_infer,flag_save,save_file_dir)
-                # if options.flag_group:
-                #     labels_hat_all,labels_all = None,None
-                #     for i,data in enumerate(test_data):
-                #         labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir, flag_save)
-                #         #labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, data,options.flag_reverse)
-                #         print(
-                #             '\tgroup:{},\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
-                #                 i,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio))
-                #         labels_hat_all = cat_tensor(labels_hat_all,labels_hat)
-                #         labels_all = cat_tensor(labels_all, labels)
-                #     test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
-                #     print(
-                #         '\toverall\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
-                #             test_r2, test_mape, test_min_ratio, test_max_ratio))
-                # else:
-                #     _,_,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio = inference(model, test_data,options.batch_size,usage,save_file_dir,flag_save)
-                #     print(
-                #         '\ttest: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(test_loss, test_r2,
-                #                                                                                                  test_mape,test_min_ratio,test_max_ratio))
 
     elif options.checkpoint:
         print('saving logs and models to ../checkpoints/{}'.format(options.checkpoint))
