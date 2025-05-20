@@ -71,15 +71,15 @@ def load_data(usage,options):
     split_file = os.path.join(data_path, 'split.pkl')
     with open(data_file, 'rb') as f:
         data_all = pickle.load(f)
-        design_names = [d[1]['design_name'].split('_')[-1] for d in data_all]
+        design_names = [d[1]['design_name'] for d in data_all]
 
     with open(split_file, 'rb') as f:
         split_list = pickle.load(f)
 
     target_list = split_list[usage]
-    target_list = [n.split('_')[-1] for n in target_list]
+    target_list = [n for n in target_list]
     #print(target_list[:10])
-    print(split_list,target_list)
+    #print(split_list,target_list)
 
     data = [d for i,d in enumerate(data_all) if design_names[i] in target_list]
     case_range = (0, 100)
@@ -88,6 +88,7 @@ def load_data(usage,options):
             case_range = (0,20)
         else:
             case_range = (0, 40)
+    
     print("------------Loading {}_data #{} {}-------------".format(usage,len(data),case_range))
 
     loaded_data = []
