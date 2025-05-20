@@ -19,7 +19,7 @@ python parser.py --rawdata_path [path of the rawdata] --data_savepath [path to s
 (an example: python parser.py --rawdata_path ../rawdata/dir_in_level_0 --data_savepath ../datasets/dir_in_level_0)
 
 #5. run the training script
-python train.py --data_savepath  [path of the generated dataset] --checkpoint [path to save the trained model and logs] --flag_attn --attn_choice 0 --gpu 0 --hidden_dim 128 --batch_size 16 --flag_r --flag_p --flag_al -flag_width --global_info 3 --global_cat 1
+python train.py --data_savepath  [path of the generated dataset] --checkpoint [path to save the trained model and logs] --flag_attn --attn_choice 0 --gpu 0 --hidden_dim 128 --batch_size 16 --flag_r --flag_p --flag_al --flag_width --global_info 3 --global_cat 1
 
 
 #6. run the testing script
