@@ -429,7 +429,7 @@ class BPN(nn.Module):
                     graph.ndata['hp'] = nodes_prob
                     graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(device)
                     graph.ndata['id'][POs] = th.tensor(range(len(POs)), dtype=th.int64).unsqueeze(-1).to(device)
-                    graph.pull(Os, self.message_func_prob, self.reduce_func_prob, etype='pi2po')
+                    graph.pull(POs, self.message_func_prob, self.reduce_func_prob, etype='pi2po')
                     POs_criticalprob = graph.ndata['prob_sum'][POs]
                     prob_sum = graph.ndata['prob_sum'][POs]
                     prob_dev = graph.ndata['prob_dev'][POs]
