@@ -88,11 +88,11 @@ def load_data(usage,options):
             case_range = (0,20)
         else:
             case_range = (0, 40)
-    
+
     print("------------Loading {}_data #{} {}-------------".format(usage,len(data),case_range))
 
     loaded_data = []
-    if options.test_iter or usage=='test' and options.flag_group:
+    if (options.test_iter or usage=='test') and options.flag_group:
         loaded_data = {}
     for  graph,graph_info in data:
         #print(graph_info['design_name'])
@@ -134,7 +134,7 @@ def load_data(usage,options):
         graph_info['delay-label_pairs'][50] = graph_info['delay-label_pairs'][0]
         graph_info['delay-label_pairs'] = graph_info['delay-label_pairs'][case_range[0]:case_range[1]]
 
-        if options.test_iter or usage=='test' and options.flag_group:
+        if (options.test_iter or usage=='test') and options.flag_group:
             if designs_group is None:
                 loaded_data[graph_info['design_name']] = loaded_data.get(graph_info['design_name'],[])
                 loaded_data[graph_info['design_name']].append(graph_info)
