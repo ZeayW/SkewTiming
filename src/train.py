@@ -714,16 +714,16 @@ if __name__ == "__main__":
             # exit()
             model = init_model(options)
             model.flag_train = True
-            flag_inference = True
+            flag_inference = False
 
             model = model.to(device)
             model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu" ))
-            usages = ['test','train']
-            #usages = ['test']
+            #usages = ['test','train']
+            usages = ['test']
 
             for usage in usages:
                 flag_save = True
-                flag_infer = True
+                flag_infer = False
                 save_file_dir = options.checkpoint
                 test_data = load_data(usage,options)
                 if len(test_data)==0:
