@@ -26,7 +26,7 @@ import itertools
 
 
 options = get_options()
-device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() else "cpu")
+device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu !=-1 else "cpu")
 R2_score = R2Score().to(device)
 Loss = nn.MSELoss()
 Loss = nn.L1Loss()

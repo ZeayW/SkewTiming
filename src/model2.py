@@ -7,7 +7,7 @@ from dgl import function as fn
 from utils import *
 from options import get_options
 options = get_options()
-device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() else "cpu")
+device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
 
 def cat_tensor(t1,t2):
     if t1 is None:
@@ -410,7 +410,6 @@ class BPN(nn.Module):
                             graph.edges['reverse'].data['weight'][eids_r] = graph.edges['intra_module'].data['weight'][
                                 eids]
 
-
             h_gnn = graph.ndata['h'][PO_mask]
             h  = h_gnn
             rst = self.mlp_out(h_gnn)
@@ -436,6 +435,7 @@ class BPN(nn.Module):
 
                 if not self.flag_reverse:
                     return rst, prob_sum,prob_dev,POs_criticalprob
+
 
                 nodes_emb = graph.ndata['h']
 
