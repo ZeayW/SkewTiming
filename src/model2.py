@@ -7,7 +7,7 @@ from dgl import function as fn
 from utils import *
 from options import get_options
 options = get_options()
-device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
+#device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
 
 def cat_tensor(t1,t2):
     if t1 is None:
@@ -46,6 +46,7 @@ class BPN(nn.Module):
                  infeat_dim1,
                  infeat_dim2,
                  hidden_dim,
+                 device,
                  global_cat_choice=0,
                  global_info_choice=0,
                  agg_choice=0,
@@ -58,6 +59,7 @@ class BPN(nn.Module):
                  ):
         super(BPN, self).__init__()
 
+        self.device = device
         self.global_cat_choice = global_cat_choice
         self.global_info_choice = global_info_choice
         self.flag_degree = flag_degree
@@ -355,7 +357,7 @@ class BPN(nn.Module):
                 graph.pull(nodes, self.message_func_reverse, self.reduce_fun_reverse, etype='reverse')
             return graph.ndata['hp'], graph.ndata['hd']
 
-    def forward(self, graph,graph_info):
+    def forward(self,graph,graph_info):
 
         topo = graph_info['topo']
         PO_mask = graph_info['POs']
@@ -365,7 +367,7 @@ class BPN(nn.Module):
 
             if self.flag_reverse or self.flag_path_supervise:
                 graph.edges['reverse'].data['weight'] = th.zeros((graph.number_of_edges('reverse'), 1),
-                                                                 dtype=th.float).to(device)
+                                                                 dtype=th.float).to(self.device)
             #propagate messages in the topological order, from PIs to POs
             for i, nodes in enumerate(topo):
                 isModule_mask = graph.ndata['is_module'][nodes] == 1
@@ -426,8 +428,8 @@ class BPN(nn.Module):
 
                 if self.flag_path_supervise or self.global_cat_choice in [3,4,5,7]:
                     graph.ndata['hp'] = nodes_prob
-                    graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(device)
-                    graph.ndata['id'][POs] = th.tensor(range(len(POs)), dtype=th.int64).unsqueeze(-1).to(device)
+                    graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(self.device)
+                    graph.ndata['id'][POs] = th.tensor(range(len(POs)), dtype=th.int64).unsqueeze(-1).to(self.device)
                     graph.pull(POs, self.message_func_prob, self.reduce_func_prob, etype='pi2po')
                     POs_criticalprob = graph.ndata['prob_sum'][POs]
                     prob_sum = graph.ndata['prob_sum'][POs]
@@ -592,14 +594,15 @@ class ACCNN(nn.Module):
 
 
 class PathModel(nn.Module):
-    def __init__(self,infeat_dim,hidden_dim,impl_choice=0):
+    def __init__(self,infeat_dim,hidden_dim,device,impl_choice=0):
         super(PathModel, self).__init__()
         self.impl_choice = impl_choice
+        self.device = device
         if impl_choice == 0:
             self.model = MLP(infeat_dim,hidden_dim,hidden_dim,1)
 
     def forward(self,POs_feat):
-        rst = th.zeros((len(POs_feat),1),dtype=th.float).to(device)
+        rst = th.zeros((len(POs_feat),1),dtype=th.float).to(self.device)
         for i,feat in enumerate(POs_feat):
             path_delays = self.model(feat)
             max_delay = th.max(path_delays)

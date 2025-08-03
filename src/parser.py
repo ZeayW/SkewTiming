@@ -954,8 +954,10 @@ def parse_golden(file_path):
 
 
 def main():
+    global ntype2id,ntype2id_gate,ntype2id_module
     dataset = []
     num = 0
+    designs_group = {0: [], 1: [], 2: [], 3: []}
 
     if 'round7' in rawdata_path: subdirs = ['']
     if 'round6' in rawdata_path: subdirs =  os.listdir(rawdata_path)
@@ -964,13 +966,9 @@ def main():
         subdir_path = os.path.join(rawdata_path,subdir)
         design2idx = {}
         for design in os.listdir(subdir_path):
-            num += 1
-
             #if '308' not in design: continue
-            # if int(design.split('_')[-1]) in [110,220,183,185,319,320,329,371,383,392,399]:
-            #     continue
-
-
+            if int(design.split('_')[-1]) in [110,220,183,185,319,320,329,371,383,392,399]:
+                continue
             #if design  in [ 'ldpcenc', 'systemcaes','sha3', 'wb_conmax','oc_wb_dma','mc6809', 's15850', 'tv80', 'oc_mem_ctrl','ecg','y_dct']: continue
 
             #if design in ['sin','multiplier','div','sqrt','mem_ctrl','log2','y_huff','voter']: continue
@@ -1000,8 +998,10 @@ def main():
             if graph is None or th.sum(graph.ndata['is_po']).item()==0:
                 continue
 
-            if len(graph_info['POs_name'])<10:
-                continue
+
+
+            # if 'round7' in design_dir and len(graph_info['POs_name'])<10:
+            #     continue
 
             #label_files = [f for f in os.listdir(design_dir) if f.startswith('gold')]
             #case_indexs = [int(f.split('_')[-1].split('.')[0]) for f in label_files]
@@ -1098,21 +1098,27 @@ def main():
                 graph_info['delay-label_pairs'].append((PIs_delay, POs_label,POs_label_residual,pi2po_edges))
 
 
-            print(design,'#pairs',len(graph_info['delay-label_pairs']))
-
             POs_base_label = []
             for node in graph_info['POs_name']:
                 POs_base_label.append(graph_info['base_po_labels'][node])
             graph_info['base_po_labels'] = POs_base_label
 
-            if len(graph_info['delay-label_pairs'])<=1:
+            if len(graph_info['delay-label_pairs'])<100:
                 continue
+
+
 
             if graph is not None:
                 dataset.append((graph,graph_info))
+
+            print(design, '#pairs', len(graph_info['delay-label_pairs']))
+            group_id = int(int(design.split('_')[-1]) / 100)
+            designs_group[group_id].append(graph_info['design_name'])
             # print(graph.ndata['is_pi'])
             # print(graph_info['delay-label_pairs'])
         # exit()
+
+    # if not os.path.exists(ntype_file):
 
     if os.path.exists(ntype_file):
         with open(ntype_file,'rb') as f:
@@ -1121,6 +1127,10 @@ def main():
         with open(ntype_file,'wb') as f:
             pickle.dump((ntype2id,ntype2id_gate,ntype2id_module),f)
 
+
+    # with open(ntype_file, 'wb') as f:
+    #     pickle.dump((ntype2id, ntype2id_gate, ntype2id_module), f)
+    
     print('ntypes:',ntype2id,ntype2id_gate,ntype2id_module)
 
 
@@ -1148,19 +1158,21 @@ def main():
     split_ratio = [0.7, 0.1, 0.2]
     num_designs = len(dataset)
     print(len(dataset))
-    data_train = dataset[:int(0.7 * num_designs)]
-    data_val = dataset[int(0.7 * num_designs):int(0.8 * num_designs)]
-    data_test = dataset[int(0.8 * num_designs):]
-    data_list = {
-        'train': [g_info['design_name'] for g, g_info in data_train],
-        'test': [g_info['design_name'] for g, g_info in data_test],
-        'val': [g_info['design_name'] for g, g_info in data_val]}
-    #data_list = {'train': [], 'val': [], 'test': [g_info['design_name'] for g, g_info in dataset]}
-    print('#train:{}, #val:{}, #test:{}'.format(len(data_train),len(data_val),len(data_test)))
 
+    for id in designs_group.keys():
+        shuffle(designs_group[id])
 
+    split_list = {'train': [], 'test': [], 'val': []}
+    for group_id, designs in designs_group.items():
+        num_designs = len(designs)
+        split_list['train'].extend(designs[:int(0.7 * num_designs)])
+        split_list['val'].extend(designs[int(0.7 * num_designs):int(0.8 * num_designs)])
+        split_list['test'].extend(designs[int(0.8 * num_designs):])
+    print('#train:{}, #val:{}, #test:{}'.format(len(split_list['train']), len(split_list['val']), len(split_list['test'])))
+
+    print(split_list['val'])
     with open(os.path.join(data_savepath, 'split.pkl'), 'wb') as f:
-        pickle.dump(data_list, f)
+        pickle.dump(split_list, f)
     with open(os.path.join(data_savepath,'data.pkl'),'wb') as f:
         pickle.dump(dataset,f)
     # with open(os.path.join(data_savepath,'graph.pkl'),'wb') as f:

@@ -9,8 +9,8 @@ def get_options(args=None):
     parser.add_argument('--flag_alternate',action='store_true')
     parser.add_argument('--global_out_choice', type=int, default=0,
                         help='choose the way to implement the global attention')
-    parser.add_argument('--global_cat_choice', type=int, default=0, help='choose the way to implement the global attention')
-    parser.add_argument('--global_info_choice',  type=int,default=0,help='choose the way to implement the global attention')
+    parser.add_argument('--global_cat_choice', type=int, default=1, help='choose the way to implement the global attention')
+    parser.add_argument('--global_info_choice',  type=int,default=3,help='choose the way to implement the global attention')
     parser.add_argument('--remove01',action='store_true')
     parser.add_argument('--inv_choice',type=int,default=-1)
     parser.add_argument('--quick',action='store_true')
@@ -46,6 +46,8 @@ def get_options(args=None):
     parser.add_argument("--weight_decay", type=float, help='weight decay. Type: float',default=0)
     parser.add_argument("--gpu",type=int,help='index of gpu. Type: int')
     parser.add_argument('--data_savepath',type=str,help='the directory that contains the dataset. Type: str',default='../data/arith_blocks')
+    parser.add_argument('--testdata_path', type=str, help='the directory that contains the testing dataset. Type: str',
+                        default='../data/arith_blocks')
     parser.add_argument('--predict_path',type=str,help='the directory used to save the prediction result. Type: str',default='../prediction/example')
     parser.add_argument('--flag_split01',action='store_true',help="control whether use seperate node for each constant (1'b0,1'b1)")
     options = parser.parse_args(args)

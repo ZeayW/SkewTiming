@@ -59,13 +59,13 @@ def load_data(usage,options):
     if data_path.endswith('/'):
         data_path = data_path[:-1]
     data_file = os.path.join(data_path, 'data.pkl')
-    # if 'round7' in data_path:
-    #     split_file = os.path.join(data_path, 'split.pkl')
-    #     designs_group = None
-    # else:
-    #     split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-    #     with open('designs_group_new.pkl', 'rb') as f:
-    #         designs_group = pickle.load(f)
+    if 'round7' in data_path:
+        split_file = os.path.join(data_path, 'split.pkl')
+        designs_group = None
+    else:
+        split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
+        with open('designs_group_new.pkl', 'rb') as f:
+            designs_group = pickle.load(f)
 
     designs_group = None
     split_file = os.path.join(data_path, 'split.pkl')
@@ -98,7 +98,14 @@ def load_data(usage,options):
         #print(graph_info['design_name'])
         #if int(graph_info['design_name'].split('_')[-1]) in [54, 96, 131, 300, 327, 334, 397]:
         #    continue
+
+        if usage == 'test' and designs_group is None:
+            # if len(gather_data(data,0)[0]) <= 150:
+            #     continue
+            if graph_info['design_name'] in ['y_dct', 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
+
 
         if options.flag_homo:
             graph = heter2homo(graph)
@@ -162,6 +169,7 @@ def init_model(options):
                 infeat_dim1=num_gate_types,
                 infeat_dim2=num_module_types,
                 hidden_dim=options.hidden_dim,
+                device=device,
                 global_cat_choice=options.global_cat_choice,
                 global_info_choice= options.global_info_choice,
                 flag_degree=options.flag_degree,
@@ -741,6 +749,7 @@ if __name__ == "__main__":
         with open(os.path.join(checkpoint_path,'res.txt'),'w') as f:
             pass
         with tee.StdoutTee(stdout_f), tee.StderrTee(stderr_f):
+
             model = init_model(options)
 
             if options.pretrain_dir is not None:
