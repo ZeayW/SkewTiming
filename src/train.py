@@ -59,13 +59,13 @@ def load_data(usage,options):
     if data_path.endswith('/'):
         data_path = data_path[:-1]
     data_file = os.path.join(data_path, 'data.pkl')
-    if 'round7' in data_path:
-        split_file = os.path.join(data_path, 'split.pkl')
-        designs_group = None
-    else:
-        split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-        with open('designs_group_new.pkl', 'rb') as f:
-            designs_group = pickle.load(f)
+    # if 'round7' in data_path:
+    #     split_file = os.path.join(data_path, 'split.pkl')
+    #     designs_group = None
+    # else:
+    #     split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
+    #     with open('designs_group_new.pkl', 'rb') as f:
+    #         designs_group = pickle.load(f)
 
     designs_group = None
     split_file = os.path.join(data_path, 'split.pkl')
