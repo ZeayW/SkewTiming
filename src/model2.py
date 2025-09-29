@@ -401,8 +401,7 @@ class BPN(nn.Module):
                             graph.apply_edges(self.edge_msg_gate, eids, etype='intra_gate')
                         graph.pull(nodes_gate, message_func_gate, reduce_func_gate, self.nodes_func_gate,
                                    etype='intra_gate')
-                        if self.flag_delay: graph.pull(nodes_gate, self.message_func_delay, self.reduce_func_delay_g,
-                                   etype='intra_gate')
+
                         if self.flag_reverse or self.flag_path_supervise:
                             eids = graph.in_edges(nodes_gate, form='eid', etype='intra_gate')
                             eids_r = graph.out_edges(nodes_gate, form='eid', etype='reverse')
@@ -413,6 +412,10 @@ class BPN(nn.Module):
                             elif self.attn_choice == 1:
                                 graph.edges['reverse'].data['weight'][eids_r] = \
                                 graph.edges['intra_gate'].data['weight'][eids].unsqueeze(1)
+
+                            if self.flag_delay: graph.pull(nodes_gate, self.message_func_delay,
+                                                           self.reduce_func_delay_g,
+                                                           etype='intra_gate')
                     if len(nodes_module) != 0:
                         eids = graph.in_edges(nodes_module, form='eid', etype='intra_module')
                         graph.pull(nodes_module, fn.copy_e('bit_position', 'pos'), fn.mean('pos', 'width2'),
@@ -420,12 +423,15 @@ class BPN(nn.Module):
                         graph.apply_edges(self.edge_msg_module, eids, etype='intra_module')
                         graph.pull(nodes_module, self.message_func_module, self.reduce_func_attn_m,
                                    self.nodes_func_module, etype='intra_module')
-                        if self.flag_delay: graph.pull(nodes_module, self.message_func_delay, self.reduce_func_delay_m, etype='intra_module')
+
                         if self.flag_reverse or self.flag_path_supervise:
                             graph.apply_edges(self.edge_msg_module_weight, eids, etype='intra_module')
                             eids_r = graph.out_edges(nodes_module, form='eid', etype='reverse')
                             graph.edges['reverse'].data['weight'][eids_r] = graph.edges['intra_module'].data['weight'][
                                 eids]
+
+                            if self.flag_delay: graph.pull(nodes_module, self.message_func_delay,
+                                                           self.reduce_func_delay_m, etype='intra_module')
 
             h_gnn = graph.ndata['h'][PO_mask]
             h  = h_gnn
