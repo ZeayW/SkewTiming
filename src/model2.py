@@ -51,6 +51,7 @@ class BPN(nn.Module):
                  global_info_choice=0,
                  agg_choice=0,
                  attn_choice=1,
+                 flag_delay=False,
                  flag_degree=False,
                  flag_width=False,
                  flag_path_supervise=False,
@@ -62,6 +63,7 @@ class BPN(nn.Module):
         self.device = device
         self.global_cat_choice = global_cat_choice
         self.global_info_choice = global_info_choice
+        self.flag_delay = flag_delay
         self.flag_degree = flag_degree
         self.flag_width = flag_width
         self.flag_path_supervise = flag_path_supervise
@@ -88,6 +90,10 @@ class BPN(nn.Module):
             new_out_dim += 1
         elif self.global_cat_choice in [1, 5, 7]:
             new_out_dim += self.hidden_dim
+
+        if self.flag_delay:
+            new_out_dim += 1
+
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
 
 
@@ -120,6 +126,9 @@ class BPN(nn.Module):
         neigh_dim_m = self.hidden_dim + feat_dim_m
         neigh_dim_g = self.hidden_dim + feat_dim_g
 
+        if self.flag_delay:
+            neigh_dim_g += 1
+            neigh_dim_m += 1
         # feat_outdim_m = 32
         # feat_outdim_g = 32
         # neigh_dim_m = self.hidden_dim + feat_outdim_m
@@ -181,9 +190,12 @@ class BPN(nn.Module):
             h_dst = th.cat((h_dst,edges.dst['degree']),dim=1)
         if self.flag_width:
             h_dst = th.cat((h_dst,edges.dst['width2']),dim=1)
+
         #h_dst = self.linear_feat_module(h_dst)
 
         z = th.cat((edges.src['h'],h_dst),dim=1)
+        if self.flag_delay:
+            z = th.cat((z,edges.src['delay']),dim=1)
 
         #z = self.mlp_neigh_module(z)
         z = self.linear_neigh_module(z)
@@ -191,13 +203,12 @@ class BPN(nn.Module):
         e = self.activation2(e)
         return {'attn_e': e,'z':z}
 
+
     def message_func_module(self,edges):
         #m = th.cat((edges.src['h'], edges.data['bit_position'].unsqueeze(1)), dim=1)
         m = edges.data['z']
         rst = {'m':m,'attn_e':edges.data['attn_e']}
         return rst
-
-
 
     def reduce_func_attn_m(self,nodes):
         #h_pos = th.mean(nodes.mailbox['pos'],dim=1)
@@ -245,6 +256,8 @@ class BPN(nn.Module):
         #h_dst = self.linear_feat_gate(h_dst)
 
         z = th.cat((edges.src['h'], h_dst),dim=1)
+        if self.flag_delay:
+            z = th.cat((z,edges.src['delay']),dim=1)
         #z = self.mlp_neigh_gate(z)
         z = self.linear_neigh_gate(z)
         e = th.matmul(z, self.attention_vector_g)
@@ -295,18 +308,17 @@ class BPN(nn.Module):
         return {'md': edges.src['delay'],'w':edges.data['weight']}
         #return {'md':edges.src['delay']}
 
-
     def reduce_func_delay_g(self,nodes):
-        delay = th.max(nodes.mailbox['md'],dim=1).values+0.3
+
         #input_delay = th.max(nodes.mailbox['md'],dim=1).values
-        input_delay = th.sum(nodes.mailbox['md'] * nodes.mailbox['w'], dim=1)
-        return {'delay':delay,'input_delay':input_delay}
+        delay = th.sum(nodes.mailbox['md'] * nodes.mailbox['w'], dim=1)
+        return {'delay':delay}
 
     def reduce_func_delay_m(self,nodes):
-        delay = th.max(nodes.mailbox['md'],dim=1).values+0.6
+
         #input_delay = th.max(nodes.mailbox['md'], dim=1).values
-        input_delay = th.sum(nodes.mailbox['md']*nodes.mailbox['w'],dim=1)
-        return {'delay':delay,'input_delay':input_delay}
+        delay = th.sum(nodes.mailbox['md']*nodes.mailbox['w'],dim=1)
+        return {'delay':delay}
 
 
     def message_func_prob(self, edges):
@@ -389,6 +401,8 @@ class BPN(nn.Module):
                             graph.apply_edges(self.edge_msg_gate, eids, etype='intra_gate')
                         graph.pull(nodes_gate, message_func_gate, reduce_func_gate, self.nodes_func_gate,
                                    etype='intra_gate')
+                        if self.flag_delay: graph.pull(nodes_gate, self.message_func_delay, self.reduce_func_delay_g,
+                                   etype='intra_gate')
                         if self.flag_reverse or self.flag_path_supervise:
                             eids = graph.in_edges(nodes_gate, form='eid', etype='intra_gate')
                             eids_r = graph.out_edges(nodes_gate, form='eid', etype='reverse')
@@ -406,6 +420,7 @@ class BPN(nn.Module):
                         graph.apply_edges(self.edge_msg_module, eids, etype='intra_module')
                         graph.pull(nodes_module, self.message_func_module, self.reduce_func_attn_m,
                                    self.nodes_func_module, etype='intra_module')
+                        if self.flag_delay: graph.pull(nodes_module, self.message_func_delay, self.reduce_func_delay_m, etype='intra_module')
                         if self.flag_reverse or self.flag_path_supervise:
                             graph.apply_edges(self.edge_msg_module_weight, eids, etype='intra_module')
                             eids_r = graph.out_edges(nodes_module, form='eid', etype='reverse')
@@ -507,10 +522,12 @@ class BPN(nn.Module):
                     prob_max = th.max(nodes_prob_tr, dim=1).values.unsqueeze(1)
                     h = th.cat((h, (1 - prob_max) * h_global), dim=1)
 
+                if self.flag_delay:
+                    h = th.cat((h,graph.ndata['delay'])[PO_mask],dim=1)
+
                 rst = self.mlp_out_new(h)
 
                 return  rst,prob_sum, prob_dev,POs_criticalprob
-
 
             return rst,prob_sum, prob_dev,POs_criticalprob
 
