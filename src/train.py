@@ -25,6 +25,7 @@ import itertools
 
 
 
+
 options = get_options()
 device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu !=-1 else "cpu")
 R2_score = R2Score().to(device)
@@ -172,6 +173,7 @@ def init_model(options):
                 device=device,
                 global_cat_choice=options.global_cat_choice,
                 global_info_choice= options.global_info_choice,
+                flag_delay=options.flag_delay,
                 flag_degree=options.flag_degree,
                 flag_width=options.flag_width,
                 flag_path_supervise=options.flag_path_supervise,
@@ -644,6 +646,7 @@ def train(model):
                         path_loss = prob_sum - 1 * prob_dev
                         train_loss = th.mean((th.exp(1 - path_loss)) * th.abs(labels_hat-POs_label))
                         #train_loss = th.mean((th.exp(1 - path_loss)) * th.pow(labels_hat - POs_label,2))
+
 
                     num_POs += len(prob_sum)
 
