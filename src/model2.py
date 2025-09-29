@@ -529,7 +529,7 @@ class BPN(nn.Module):
                     h = th.cat((h, (1 - prob_max) * h_global), dim=1)
 
                 if self.flag_delay:
-                    h = th.cat((h,graph.ndata['delay'])[PO_mask],dim=1)
+                    h = th.cat((h,graph.ndata['delay'][PO_mask]),dim=1)
 
                 rst = self.mlp_out_new(h)
 
