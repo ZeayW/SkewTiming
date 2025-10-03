@@ -69,7 +69,7 @@ def load_data(usage,options):
             designs_group = pickle.load(f)
 
 
-    designs_group = None
+    #designs_group = None
     #split_file = os.path.join(data_path, 'split_new.pkl')
     with open(data_file, 'rb') as f:
         data_all = pickle.load(f)

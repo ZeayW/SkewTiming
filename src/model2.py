@@ -75,6 +75,8 @@ class BPN(nn.Module):
         #self.linear_pi = th.nn.Linear(4, hidden_dim)
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
 
+        if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
+
         new_out_dim = 0
         if self.global_info_choice in [0, 1]:
             new_out_dim += self.hidden_dim
@@ -88,7 +90,7 @@ class BPN(nn.Module):
             new_out_dim += 2*hidden_dim + 1
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
-        elif self.global_cat_choice in [1, 5, 7]:
+        elif self.global_cat_choice in [1, 5, 7,8]:
             new_out_dim += self.hidden_dim
 
         if self.flag_delay:
@@ -341,6 +343,9 @@ class BPN(nn.Module):
         prob_max = th.max(nodes.mailbox['mp'],dim=1).values
         prob_mean = th.mean(nodes.mailbox['mp'], dim=1).unsqueeze(1)
         prob_dev = th.sum(th.abs(nodes.mailbox['mp']-prob_mean),dim=1)
+        #prob_dev =
+        #prob_entropy = th.sum(-nodes.mailbox['mp']*th.log(nodes.mailbox['mp']),dim=1)
+
         #prob_dev = th.sum(th.pow(nodes.mailbox['ml'] - prob_mean,2), dim=1)
 
         return {'prob_max':prob_max,'prob_sum':prob_sum,'prob_dev':prob_dev}
@@ -527,6 +532,10 @@ class BPN(nn.Module):
                 elif self.global_cat_choice == 7:
                     prob_max = th.max(nodes_prob_tr, dim=1).values.unsqueeze(1)
                     h = th.cat((h, (1 - prob_max) * h_global), dim=1)
+                elif self.global_cat_choice == 8:
+                    w = self.mlp_w(h)
+                    h = th.cat((h, w * h_global), dim=1)
+
 
                 if self.flag_delay:
                     h = th.cat((h,graph.ndata['delay'][PO_mask]),dim=1)
