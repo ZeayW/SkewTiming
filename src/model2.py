@@ -93,8 +93,7 @@ class BPN(nn.Module):
         elif self.global_cat_choice in [1, 5, 7,8]:
             new_out_dim += self.hidden_dim
 
-        if self.flag_delay:
-            new_out_dim += 1
+
 
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
 
@@ -535,10 +534,6 @@ class BPN(nn.Module):
                 elif self.global_cat_choice == 8:
                     w = self.mlp_w(h)
                     h = th.cat((h, w * h_global), dim=1)
-
-
-                if self.flag_delay:
-                    h = th.cat((h,graph.ndata['delay'][PO_mask]),dim=1)
 
                 rst = self.mlp_out_new(h)
 
