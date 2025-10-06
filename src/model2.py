@@ -327,7 +327,7 @@ class BPN(nn.Module):
 
     def message_func_prob(self, edges):
         msg = th.gather(edges.src['hp'], dim=1, index=edges.dst['id'])
-        pi_feat = th.gather(edges.src['delay'], dim=1, index=edges.dst['id'])
+        pi_feat = edges.src['delay']
         return {'mp': msg,'mi':pi_feat}
 
     def nodes_func_pi(self,nodes):
