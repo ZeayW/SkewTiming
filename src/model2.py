@@ -76,7 +76,8 @@ class BPN(nn.Module):
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
 
         if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
-        if self.global_cat_choice == 9: self.mlp_w2 = MLP(1, hidden_dim, 1)
+        if self.global_cat_choice in [9,11]: self.mlp_w2 = MLP(1, hidden_dim, 1)
+        if self.global_cat_choice == 10: self.mlp_w2 = MLP(2, hidden_dim, 1)
 
         new_out_dim = 0
         if self.global_info_choice in [0, 1]:
@@ -91,7 +92,7 @@ class BPN(nn.Module):
             new_out_dim += 2*hidden_dim + 1
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
-        elif self.global_cat_choice in [1, 5, 7,8,9]:
+        elif self.global_cat_choice in [1, 5, 7,8,9,10,11]:
             new_out_dim += self.hidden_dim
 
 
@@ -326,7 +327,8 @@ class BPN(nn.Module):
 
     def message_func_prob(self, edges):
         msg = th.gather(edges.src['hp'], dim=1, index=edges.dst['id'])
-        return {'mp': msg}
+        pi_feat = th.gather(edges.src['delay'], dim=1, index=edges.dst['id'])
+        return {'mp': msg,'mi':pi_feat}
 
     def nodes_func_pi(self,nodes):
         h = th.cat((nodes.data['delay'],nodes.data['value']),dim=1)
@@ -341,10 +343,11 @@ class BPN(nn.Module):
 
     def reduce_func_prob(self,nodes):
         prob_sum = th.sum(nodes.mailbox['mp'],dim=1)
+        #prob_sum = th.sum(nodes.mailbox['mp']*nodes.mailbox['mi'], dim=1)
         prob_max = th.max(nodes.mailbox['mp'],dim=1).values
         prob_mean = th.mean(nodes.mailbox['mp'], dim=1).unsqueeze(1)
         prob_dev = th.sum(th.abs(nodes.mailbox['mp']-prob_mean),dim=1)
-        #prob_dev = th.sum(-nodes.mailbox['mp']*th.log(nodes.mailbox['mp']+1e-10),dim=1)
+        #prob_dev = th.sum(nodes.mailbox['mp']*th.log(nodes.mailbox['mp']+1e-10),dim=1)
 
         #prob_dev = th.sum(th.pow(nodes.mailbox['ml'] - prob_mean,2), dim=1)
 
@@ -544,6 +547,15 @@ class BPN(nn.Module):
                 elif self.global_cat_choice == 9:
                     etp = -th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1)
                     w = self.mlp_w2(etp)
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 9:
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    minmax = (th.max(nodes_prob_tr,dim=1).values - th.min(nodes_prob_tr,dim=1).values).unsqueeze(1)
+                    w = self.mlp_w2(th.cat((etp,minmax),dim=1))
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 11:
+                    minmax = (th.max(nodes_prob_tr,dim=1).values - th.min(nodes_prob_tr,dim=1).values).unsqueeze(1)
+                    w = self.mlp_w2(minmax)
                     h = th.cat((h, w * h_global), dim=1)
 
 

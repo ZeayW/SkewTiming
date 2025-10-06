@@ -23,7 +23,7 @@ from utils import *
 from time import time
 import itertools
 
-
+os.environ['CUDA_LAUNCH_BLOCKING'] = 1
 
 
 options = get_options()
