@@ -532,7 +532,7 @@ class BPN(nn.Module):
                     h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
 
                     h_global = th.cat((h_global, h_pi,h_etp), dim=1)
-                elif self.global_info_choice == 10:
+                elif self.global_info_choice == 11:
                     h_etp = self.mlp_probinfo(-th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1))
                     h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
                     h_global = th.cat((h_global, h_pi,h_etp), dim=1)
