@@ -610,8 +610,8 @@ class BPN(nn.Module):
                     w = self.mlp_w2(th.cat((etp,minmax,top2diff),dim=1))
                     h = th.cat((h, w * h_global), dim=1)
                 elif self.global_cat_choice == 18:
-                    fanin_size = th.sum(th.sign(nodes_prob_tr),dim=1)
-                    drivepi_num = th.sum(th.sign(PIs_prob),dim=1)
+                    fanin_size = th.sum(th.sign(nodes_prob_tr),dim=1).unsqueeze(1)
+                    drivepi_num = th.sum(th.sign(PIs_prob),dim=1).unsqueeze(1)
                     w = self.mlp_w2(th.cat((fanin_size,drivepi_num),dim=1))
                     h = th.cat((h, w * h_global), dim=1)
 
