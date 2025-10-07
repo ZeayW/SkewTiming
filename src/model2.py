@@ -76,8 +76,11 @@ class BPN(nn.Module):
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
 
         if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
-        if self.global_cat_choice in [9,11]: self.mlp_w2 = MLP(1, hidden_dim, 1)
+        if self.global_cat_choice in [9,11,12]: self.mlp_w2 = MLP(1, hidden_dim, 1)
         if self.global_cat_choice == 10: self.mlp_w2 = MLP(2, hidden_dim, 1)
+
+        if self.global_info_choice == 11: self.mlp_probinfo = MLP(1, hidden_dim, 32)
+
 
         new_out_dim = 0
         if self.global_info_choice in [0, 1]:
@@ -88,11 +91,13 @@ class BPN(nn.Module):
             new_out_dim += self.hidden_dim + 1
         elif self.global_info_choice in [6,9]:
             new_out_dim += self.hidden_dim + 2
-        elif  self.global_info_choice in [8]:
+        elif  self.global_info_choice in [8,10]:
             new_out_dim += 2*hidden_dim + 1
+        elif  self.global_info_choice in [11]:
+            new_out_dim += 2*hidden_dim + 32
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
-        elif self.global_cat_choice in [1, 5, 7,8,9,10,11]:
+        elif self.global_cat_choice in [1, 5, 7,8,9,10,11,12]:
             new_out_dim += self.hidden_dim
 
 
@@ -522,6 +527,15 @@ class BPN(nn.Module):
                     nodes_delay, nodes_inputDelay = self.prop_delay(graph, graph_info)
                     h_d = nodes_inputDelay[POs]
                     h_global = th.cat((h_global, h_d,maxPI_delay), dim=1)
+                elif self.global_info_choice == 10:
+                    h_etp = -th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1)
+                    h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
+
+                    h_global = th.cat((h_global, h_pi,h_etp), dim=1)
+                elif self.global_info_choice == 10:
+                    h_etp = self.mlp_probinfo(-th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1))
+                    h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
+                    h_global = th.cat((h_global, h_pi,h_etp), dim=1)
 
 
                 if self.global_cat_choice == 0:
@@ -548,7 +562,7 @@ class BPN(nn.Module):
                     etp = -th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1)
                     w = self.mlp_w2(etp)
                     h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 9:
+                elif self.global_cat_choice == 10:
                     etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
                     minmax = (th.max(nodes_prob_tr,dim=1).values - th.min(nodes_prob_tr,dim=1).values).unsqueeze(1)
                     w = self.mlp_w2(th.cat((etp,minmax),dim=1))
@@ -556,6 +570,10 @@ class BPN(nn.Module):
                 elif self.global_cat_choice == 11:
                     minmax = (th.max(nodes_prob_tr,dim=1).values - th.min(nodes_prob_tr,dim=1).values).unsqueeze(1)
                     w = self.mlp_w2(minmax)
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 12:
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    w = th.sigmoid(self.mlp_w2(etp))
                     h = th.cat((h, w * h_global), dim=1)
 
 
