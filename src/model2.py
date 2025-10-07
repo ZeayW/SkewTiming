@@ -76,8 +76,9 @@ class BPN(nn.Module):
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
 
         if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
-        if self.global_cat_choice in [9,11,12]: self.mlp_w2 = MLP(1, hidden_dim, 1)
-        if self.global_cat_choice == 10: self.mlp_w2 = MLP(2, hidden_dim, 1)
+        if self.global_cat_choice in [9,11,12,13,15]: self.mlp_w2 = MLP(1, hidden_dim, 1)
+        if self.global_cat_choice in [10,14,16,18]: self.mlp_w2 = MLP(2, hidden_dim, 1)
+        if self.global_cat_choice == 17: self.mlp_w2 = MLP(3, hidden_dim, 1)
 
         if self.global_info_choice == 11: self.mlp_probinfo = MLP(1, hidden_dim, 32)
 
@@ -97,7 +98,7 @@ class BPN(nn.Module):
             new_out_dim += 2*hidden_dim + 32
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
-        elif self.global_cat_choice in [1, 5, 7,8,9,10,11,12]:
+        elif self.global_cat_choice in [1, 5, 7,8,9,10,11,12,13,14,15,16,17,18]:
             new_out_dim += self.hidden_dim
 
 
@@ -575,7 +576,44 @@ class BPN(nn.Module):
                     etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
                     w = th.sigmoid(self.mlp_w2(etp))
                     h = th.cat((h, w * h_global), dim=1)
-
+                elif self.global_cat_choice == 13:
+                    etp = -th.sum(PIs_prob*th.log(PIs_prob+1e-10),dim=1).unsqueeze(1)
+                    w = self.mlp_w2(etp)
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 14:
+                    etp = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
+                    minmax = (th.max(PIs_prob,dim=1).values - th.min(PIs_prob,dim=1).values).unsqueeze(1)
+                    w = self.mlp_w2(th.cat((etp,minmax),dim=1))
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 15:
+                    minmax = (th.max(PIs_prob,dim=1).values - th.min(PIs_prob,dim=1).values).unsqueeze(1)
+                    w = self.mlp_w2(minmax)
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 16:
+                    etp = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
+                    top2,_ =PIs_prob.topk(2,dim=1)
+                    top2diff = (top2[:,0] - top2[:,1]).unsqueeze(1)
+                    w = self.mlp_w2(th.cat((etp,top2diff),dim=1))
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 17:
+                    etp = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
+                    minmax = (th.max(PIs_prob, dim=1).values - th.min(PIs_prob, dim=1).values).unsqueeze(1)
+                    top2,_ =PIs_prob.topk(2,dim=1)
+                    top2diff = top2[:,0] - top2[:,1]
+                    w = self.mlp_w2(th.cat((etp,minmax,top2diff),dim=1))
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 17:
+                    etp = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
+                    minmax = (th.max(PIs_prob, dim=1).values - th.min(PIs_prob, dim=1).values).unsqueeze(1)
+                    top2,_ =PIs_prob.topk(2,dim=1)
+                    top2diff = top2[:,0] - top2[:,1]
+                    w = self.mlp_w2(th.cat((etp,minmax,top2diff),dim=1))
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 18:
+                    fanin_size = th.sum(th.sign(nodes_prob_tr),dim=1)
+                    drivepi_num = th.sum(th.sign(PIs_prob),dim=1)
+                    w = self.mlp_w2(th.cat((fanin_size,drivepi_num),dim=1))
+                    h = th.cat((h, w * h_global), dim=1)
 
                 rst = self.mlp_out_new(h)
 

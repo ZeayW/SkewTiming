@@ -102,9 +102,10 @@ def load_data(usage,options):
         #    continue
 
         if usage == 'test' and designs_group is None:
-            # if len(gather_data(data,0)[0]) <= 150:
-            #     continue
-            if graph_info['design_name'] in ['y_dct', 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+            if len( graph_info['delay-label_pairs'][0][1]) <= 150:
+                continue
+
+            if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
 
