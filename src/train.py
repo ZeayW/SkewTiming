@@ -104,7 +104,6 @@ def load_data(usage,options):
         if usage == 'test' and designs_group is None:
             if len( graph_info['delay-label_pairs'][0][1]) <= 150:
                 continue
-
             if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
@@ -339,7 +338,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
 
             # print(num_cases)
             flag_r = options.flag_reverse or options.flag_path_supervise
-            po_batchsize =1024
+            po_batchsize =2048
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batchsize)
 
             for POs,POs_mask in graphs_info['POs_batches']:
@@ -709,13 +708,11 @@ if __name__ == "__main__":
         options.batch_size = input_options.batch_size
         options.gpu = input_options.gpu
         options.flag_path_supervise = input_options.flag_path_supervise
-        #options.flag_reverse = input_options.flag_reverse
 
         options.remove01 = input_options.remove01
         options.flag_baseline = input_options.flag_baseline
         options.global_out_choice = input_options.global_out_choice
         options.flag_group = input_options.flag_group
-
 
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '-' not in f and '_' not in f]
