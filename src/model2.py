@@ -81,8 +81,13 @@ class BPN(nn.Module):
         if self.global_cat_choice in [17,20]: self.mlp_w2 = MLP(3, hidden_dim, 1)
         if self.global_cat_choice in [21]: self.mlp_w2 = MLP(4, hidden_dim, 1)
 
-        if self.global_info_choice in [11,12]: self.mlp_probinfo = MLP(1, hidden_dim, 32)
-
+        self.probinfo_dim = 32
+        if self.global_info_choice in [11,12]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
+        if self.global_info_choice in [13,16,17]: self.mlp_probinfo = MLP(2, hidden_dim, self.probinfo_dim)
+        if self.global_info_choice in [15]:
+            self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
+            self.mlp_Wglobal = MLP(1, hidden_dim, 1)
+            self.mlp_Wpi = MLP(1, hidden_dim, 1)
 
         new_out_dim = 0
         if self.global_info_choice in [0, 1]:
@@ -95,8 +100,8 @@ class BPN(nn.Module):
             new_out_dim += self.hidden_dim + 2
         elif  self.global_info_choice in [8,10]:
             new_out_dim += 2*hidden_dim + 1
-        elif  self.global_info_choice in [11]:
-            new_out_dim += 2*hidden_dim + 32
+        elif  self.global_info_choice in [11,13,14,15,16,17]:
+            new_out_dim += 2*hidden_dim + self.probinfo_dim
         elif  self.global_info_choice in [12]:
             new_out_dim += hidden_dim + 32
         if self.global_cat_choice in [0, 3, 4]:
@@ -543,7 +548,43 @@ class BPN(nn.Module):
                 elif self.global_info_choice == 12:
                     h_etp = self.mlp_probinfo(-th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1))
                     h_global = th.cat((h_global,h_etp), dim=1)
+                elif self.global_info_choice == 13:
 
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    top2, _ = nodes_prob_tr.topk(2, dim=1)
+                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
+                    h_prob = self.mlp_probinfo(th.cat((etp,top2diff),dim=1))
+                    h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
+                    h_global = th.cat((h_global, h_pi, h_prob), dim=1)
+                elif self.global_info_choice == 14:
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    top2, _ = nodes_prob_tr.topk(2, dim=1)
+                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
+                    h_prob = self.mlp_probinfo(th.cat((etp,top2diff),dim=1))
+                    h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
+                    h_global = th.cat((h_global, h_pi, h_prob), dim=1)
+                elif self.global_info_choice == 15:
+                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    w_global = self.mlp_Wglobal(etp_all)
+                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
+                    w_pi = self.mlp_Wpi(etp_pi)
+                    h_prob = self.mlp_probinfo(etp_all)
+                    h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
+                    h_global = th.cat((w_global*h_global, w_pi*h_pi, h_prob), dim=1)
+                elif self.global_info_choice == 16:
+                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
+                    h_prob = self.mlp_probinfo(th.cat((etp_all,etp_pi),dim=1))
+                    h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
+                    h_global = th.cat((h_global, h_pi, h_prob), dim=1)
+                elif self.global_info_choice == 17:
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    fanin_size = th.sum(th.sign(nodes_prob_tr), dim=1).unsqueeze(1)
+                    prob_sum= th.sum(nodes_prob_tr, dim=1).unsqueeze(1)
+                    prob_mean = prob_sum / fanin_size
+                    h_prob = self.mlp_probinfo(th.cat((etp,prob_mean),dim=1))
+                    h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
+                    h_global = th.cat((h_global, h_pi, h_prob), dim=1)
 
                 if self.global_cat_choice == 0:
                     h = th.cat((rst,h_global),dim=1)
