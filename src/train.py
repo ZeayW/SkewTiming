@@ -462,7 +462,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
         return labels_hat, labels,test_loss, test_r2,test_mape,min_ratio,max_ratio
     #model.flag_train = True
 
-def test(model,test_data,flag_reverse,batch_size):
+def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
 
     #batch_size = options.batch_size if flag_reverse else len(test_data)
     test_idx_loader = get_idx_loader(test_data, batch_size)
@@ -486,7 +486,7 @@ def test(model,test_data,flag_reverse,batch_size):
 
             flag_r = flag_reverse or options.flag_path_supervise
 
-            sampled_graphs, graphs_info = get_batched_data(graphs)
+            sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
 
             for POs, POs_mask in graphs_info['POs_batches']:
                 POs_mask = th.tensor(POs_mask).to(device)
@@ -522,7 +522,7 @@ def test(model,test_data,flag_reverse,batch_size):
         return labels_hat, labels,test_loss, test_r2,test_mape,min_ratio,max_ratio
 
 
-def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=False,flag_infer=False,flag_save=False,save_file_dir=None):
+def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',flag_group=False,flag_infer=False,flag_save=False,save_file_dir=None):
     print('Testing...')
     if flag_group:
         labels_hat_all, labels_all = None, None
@@ -530,6 +530,8 @@ def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=Fal
         batch_sizes = [8, 32]
         if len(test_data)!=2:
             batch_sizes = [1]*len(test_data)
+        r2_list  = []
+        mape_list = []
         for i, (name, data) in enumerate(test_data.items()):
             torch.cuda.empty_cache()
             # print(len(test_data))
@@ -537,21 +539,26 @@ def test_all(test_data,model,batch_size,flag_reverse,usage='test',flag_group=Fal
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
             else:
-                labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, data,flag_reverse,batch_size)
+                labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, data,flag_reverse,batch_size,po_bs=po_bs)
             print(
                 '\t{} {},\t#endpoints:{}\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
                     usage,name, len(labels),test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio))
+            r2_list.append(test_r2)
+            mape_list.append(test_mape)
             labels_hat_all = cat_tensor(labels_hat_all, labels_hat)
             labels_all = cat_tensor(labels_all, labels)
         test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
         print(
             '\t{} overall\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
                 usage,test_r2, test_mape, test_min_ratio, test_max_ratio))
+        print(
+            '\t{} avg\tr2={:.3f}\tmape={:.3f}'.format(
+                usage, sum(r2_list)/len(r2_list),sum(mape_list)/len(mape_list)))
     else:
         if flag_infer:
             _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, test_data,batch_size, usage,save_file_dir, flag_save)
         else:
-            _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,flag_reverse,batch_size)
+            _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,flag_reverse,batch_size,po_bs=po_bs)
         print(
             '\t{}: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(usage,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio))
 
@@ -675,8 +682,9 @@ def train(model):
 
         torch.cuda.empty_cache()
         print('End of epoch {}'.format(epoch))
-        val_r2,val_mape = test_all(val_data,model,options.batch_size,usage='val',flag_reverse=flag_reverse or flag_path)
-        test_r2, test_mape = test_all(test_data,model,options.batch_size,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
+        po_bs = 4096
+        val_r2,val_mape = test_all(val_data,model,options.batch_size,po_bs,usage='val',flag_reverse=flag_reverse or flag_path)
+        test_r2, test_mape = test_all(test_data,model,options.batch_size,po_bs,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
 
         torch.cuda.empty_cache()
         if options.checkpoint:
@@ -725,6 +733,7 @@ if __name__ == "__main__":
             model = init_model(options)
             model.flag_train = True
             flag_inference = False
+            po_bs = 2048
 
             model = model.to(device)
             model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu" ))
@@ -739,7 +748,7 @@ if __name__ == "__main__":
                 if len(test_data)==0:
                     continue
                 #test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.flag_reverse)
-                test_all(test_data,model,options.batch_size,options.flag_reverse,'test',options.flag_group,flag_infer,flag_save,save_file_dir)
+                test_all(test_data,model,options.batch_size,options.flag_reverse,po_bs,'test',options.flag_group,flag_infer,flag_save,save_file_dir)
 
     elif options.checkpoint:
         print('saving logs and models to ../checkpoints/{}'.format(options.checkpoint))

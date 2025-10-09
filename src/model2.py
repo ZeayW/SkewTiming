@@ -88,6 +88,9 @@ class BPN(nn.Module):
             self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
             self.mlp_Wglobal = MLP(1, hidden_dim, 1)
             self.mlp_Wpi = MLP(1, hidden_dim, 1)
+        if self.global_info_choice in [18]:
+            self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
+            self.mlp_Wglobal = MLP(1, hidden_dim, 1)
 
         new_out_dim = 0
         if self.global_info_choice in [0, 1]:
@@ -102,13 +105,12 @@ class BPN(nn.Module):
             new_out_dim += 2*hidden_dim + 1
         elif  self.global_info_choice in [11,13,14,15,16,17]:
             new_out_dim += 2*hidden_dim + self.probinfo_dim
-        elif  self.global_info_choice in [12]:
-            new_out_dim += hidden_dim + 32
+        elif  self.global_info_choice in [12,18]:
+            new_out_dim += hidden_dim + self.probinfo_dim
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
         elif self.global_cat_choice in [1, 5, 7,8,9,10,11,12,13,14,15,16,17,18,19,20,21]:
             new_out_dim += self.hidden_dim
-
 
 
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
@@ -585,6 +587,11 @@ class BPN(nn.Module):
                     h_prob = self.mlp_probinfo(th.cat((etp,prob_mean),dim=1))
                     h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
                     h_global = th.cat((h_global, h_pi, h_prob), dim=1)
+                elif self.global_info_choice == 18:
+                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    w_global = self.mlp_Wglobal(etp_all)
+                    h_prob = self.mlp_probinfo(etp_all)
+                    h_global = th.cat((w_global*h_global, h_prob), dim=1)
 
                 if self.global_cat_choice == 0:
                     h = th.cat((rst,h_global),dim=1)
