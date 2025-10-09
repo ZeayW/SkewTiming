@@ -82,7 +82,7 @@ class BPN(nn.Module):
         if self.global_cat_choice in [21]: self.mlp_w2 = MLP(4, hidden_dim, 1)
 
         self.probinfo_dim = 32
-        if self.global_info_choice in [11,12]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
+        if self.global_info_choice in [11,12,19]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [13,16,17]: self.mlp_probinfo = MLP(2, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [15]:
             self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
@@ -105,7 +105,7 @@ class BPN(nn.Module):
             new_out_dim += 2*hidden_dim + 1
         elif  self.global_info_choice in [11,13,14,15,16,17]:
             new_out_dim += 2*hidden_dim + self.probinfo_dim
-        elif  self.global_info_choice in [12,18]:
+        elif  self.global_info_choice in [12,18,19]:
             new_out_dim += hidden_dim + self.probinfo_dim
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
@@ -592,6 +592,12 @@ class BPN(nn.Module):
                     w_global = self.mlp_Wglobal(etp_all)
                     h_prob = self.mlp_probinfo(etp_all)
                     h_global = th.cat((w_global*h_global, h_prob), dim=1)
+                elif self.global_info_choice == 19:
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    top2, _ = nodes_prob_tr.topk(2, dim=1)
+                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
+                    h_prob = self.mlp_probinfo(th.cat((etp,top2diff),dim=1))
+                    h_global = th.cat((h_global, h_prob), dim=1)
 
                 if self.global_cat_choice == 0:
                     h = th.cat((rst,h_global),dim=1)
