@@ -682,7 +682,7 @@ def train(model):
 
         torch.cuda.empty_cache()
         print('End of epoch {}'.format(epoch))
-        po_bs = 4096
+        po_bs = 2048
         val_r2,val_mape = test_all(val_data,model,options.batch_size,po_bs=po_bs,usage='val',flag_reverse=flag_reverse or flag_path)
         test_r2, test_mape = test_all(test_data,model,options.batch_size,po_bs=po_bs,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
 
