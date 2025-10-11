@@ -30,6 +30,8 @@ class GraphProp(nn.Module):
 
             return graph.ndata[self.featname]
 
+
+
 def is_heter(graph):
     return len(graph._etypes)>1 or len(graph._ntypes)>1
 

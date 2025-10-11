@@ -104,7 +104,7 @@ def load_data(usage,options):
         if usage == 'test' and designs_group is None:
             if len( graph_info['delay-label_pairs'][0][1]) <= 150:
                 continue
-            if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+            if graph_info['design_name'] in ['s15850','s5378','tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
 
@@ -487,6 +487,7 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
             flag_r = flag_reverse or options.flag_path_supervise
 
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
+            graphs_info['nodes_name'] = data['nodes_name']
 
             for POs, POs_mask in graphs_info['POs_batches']:
                 POs_mask = th.tensor(POs_mask).to(device)
@@ -500,6 +501,7 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                     sampled_graphs = init_criticality_matrix(sampled_graphs, POs)
 
                 for j in range(num_cases):
+                    
                     torch.cuda.empty_cache()
                     flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
                     POs_label, PIs_delay, sampled_graphs,graphs_info = gather_data(sampled_data,sampled_graphs,graphs_info,j,flag_addedge)

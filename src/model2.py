@@ -8,6 +8,8 @@ from utils import *
 from options import get_options
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
+#from transformers import BertTokenizer, MobileBertForSequenceClassification, MobileBertConfig
+
 
 def cat_tensor(t1,t2):
     if t1 is None:
@@ -82,8 +84,9 @@ class BPN(nn.Module):
         if self.global_cat_choice in [21]: self.mlp_w2 = MLP(4, hidden_dim, 1)
 
         self.probinfo_dim = 32
-        if self.global_info_choice in [11,12,19]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
-        if self.global_info_choice in [13,16,17,20]: self.mlp_probinfo = MLP(2, hidden_dim, self.probinfo_dim)
+        if self.global_info_choice in [11,12]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
+        if self.global_info_choice in [13,16,17,19,20]: self.mlp_probinfo = MLP(2, hidden_dim, self.probinfo_dim)
+        if self.global_info_choice in [21]: self.mlp_probinfo = MLP(3, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [15]:
             self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
             self.mlp_Wglobal = MLP(1, hidden_dim, 1)
@@ -105,13 +108,12 @@ class BPN(nn.Module):
             new_out_dim += 2*hidden_dim + 1
         elif  self.global_info_choice in [11,13,14,15,16,17]:
             new_out_dim += 2*hidden_dim + self.probinfo_dim
-        elif  self.global_info_choice in [12,18,19,20]:
+        elif  self.global_info_choice in [12,18,19,20,21]:
             new_out_dim += hidden_dim + self.probinfo_dim
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
         elif self.global_cat_choice in [1, 5, 7,8,9,10,11,12,13,14,15,16,17,18,19,20,21]:
             new_out_dim += self.hidden_dim
-
 
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
 
@@ -393,6 +395,33 @@ class BPN(nn.Module):
                 graph.pull(nodes, self.message_func_reverse, self.reduce_fun_reverse, etype='reverse')
             return graph.ndata['hp'], graph.ndata['hd']
 
+    def find_criticalpath(self,graph,graph_info):
+        nodes_list = th.tensor(range(graph.number_of_nodes())).to(device)
+        PIs = nodes_list[graph_info['PIs_mask']]
+        POs = graph_info['POs']
+        PO2PI_prob = graph_info['PO2PI_prob']
+        PO2node_prob = graph_info['PO2node_prob']
+
+        for i,po_id in enumerate(POs):
+            # print(PO2PI_prob[i])
+            nodes_prob = PO2node_prob[i]
+            critical_path =[(po_id.item(),1)]
+            cur_nodes = graph.successors(po_id,etype='reverse')
+            while len(cur_nodes)!=0:
+                cur_nodes_prob = nodes_prob[cur_nodes]
+                max_id = th.argmax(cur_nodes_prob)
+                max_score = cur_nodes_prob[max_id]
+                max_nid = cur_nodes[max_id]
+                #print(max_id,max_score,cur_nodes_prob)
+                critical_path.append((max_nid.item(),max_score.item()))
+                cur_nodes = graph.successors(critical_path[-1][0], etype='reverse')
+
+            # print(i,[(graph_info['nodes_name'][n[0]], round(n[1],3)) for n in critical_path])
+
+
+        exit()
+
+
     def forward(self,graph,graph_info):
 
         topo = graph_info['topo']
@@ -490,6 +519,11 @@ class BPN(nn.Module):
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
 
                 nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
+
+                # graph_info['PO2PI_prob'] = PIs_prob
+                # graph_info['PO2node_prob'] = nodes_prob_tr
+                # graph_info['PIs_mask'] = PIs_mask
+                # self.find_criticalpath(graph,graph_info)
 
                 #print(nodes_dst.shape,th.max(nodes_dst,dim=1).values.shape)
                 #nodes_dst = nodes_dst / th.max(nodes_dst,dim=1).values
@@ -604,6 +638,13 @@ class BPN(nn.Module):
                     etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
                     h_prob = self.mlp_probinfo(th.cat((etp_all, etp_pi), dim=1))
                     h_global = th.cat((h_global, h_prob), dim=1)
+                elif self.global_info_choice == 21:
+                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    top2, _ = nodes_prob_tr.topk(2, dim=1)
+                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
+                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
+                    h_prob = self.mlp_probinfo(th.cat((etp_all, top2diff,etp_pi), dim=1))
+                    h_global = th.cat((h_global, h_prob), dim=1)
 
                 if self.global_cat_choice == 0:
                     h = th.cat((rst,h_global),dim=1)
@@ -693,12 +734,58 @@ class BPN(nn.Module):
                     top2diff = (top2[:,0] - top2[:,1]).unsqueeze(1)
                     w = self.mlp_w2(th.cat((etp_all,minmax,etp_pi,top2diff),dim=1))
                     h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 22:
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
 
+                    PIs_delay = nodes.ndata['delay'][PIs_mask]
+                    mask = PIs_prob >0
+
+
+
+                    w = self.mlp_w2(th.cat((etp, minmax), dim=1))
+                    h = th.cat((h, w * h_global), dim=1)
                 rst = self.mlp_out_new(h)
 
                 return  rst,prob_sum, prob_dev,POs_criticalprob
 
             return rst,prob_sum, prob_dev,POs_criticalprob
+
+#
+# class Circuitformer(nn.model):
+#     def __init__(self, num_attention_heads=2,
+#                  intermediate_size=256,
+#                  num_hidden_layers=1,
+#                  logits_size=1,
+#                  embedding_dim=30,
+#                  vocab_size=50):
+#         super().__init__()
+#         self.use_gpu = -1
+#         self.train_loss = []
+#         self.val_loss = []
+#
+#         self.bert_model_config = MobileBertConfig(vocab_size=vocab_size,
+#                                                   num_attention_heads=num_attention_heads,
+#                                                   hidden_size=embedding_dim,
+#                                                   num_hidden_layers=num_hidden_layers,
+#                                                   intermediate_size=intermediate_size)
+#
+#         self.bert_model_config.num_labels = logits_size
+#         self.bert_model = MobileBertForSequenceClassification(self.bert_model_config)
+#
+#         self.out_linear = nn.Linear(logits_size, 1)
+#         # self.logits_size = logits_size
+#
+#     def forward(self, seq_enc):
+#         attn_mask = seq_enc != 0
+#
+#         out = self.bert_model(input_ids=seq_enc, attention_mask=attn_mask).logits
+#
+#         if self.hparams.logits_size != 1:
+#             out = self.out_linear(out)
+#
+#         #out = th.ravel(out)
+#         return out
 
 
 class ACCNN(nn.Module):
