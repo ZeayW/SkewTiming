@@ -79,9 +79,10 @@ class BPN(nn.Module):
 
         if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
         if self.global_cat_choice in [9,11,12,13,15]: self.mlp_w2 = MLP(1, hidden_dim, 1)
-        if self.global_cat_choice in [10,14,16,18,19]: self.mlp_w2 = MLP(2, hidden_dim, 1)
-        if self.global_cat_choice in [17,20]: self.mlp_w2 = MLP(3, hidden_dim, 1)
+        if self.global_cat_choice in [10,14,16,18,19,23]: self.mlp_w2 = MLP(2, hidden_dim, 1)
+        if self.global_cat_choice in [17,20,24]: self.mlp_w2 = MLP(3, hidden_dim, 1)
         if self.global_cat_choice in [21]: self.mlp_w2 = MLP(4, hidden_dim, 1)
+
 
         self.probinfo_dim = 32
         if self.global_info_choice in [11,12]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
@@ -112,7 +113,7 @@ class BPN(nn.Module):
             new_out_dim += hidden_dim + self.probinfo_dim
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
-        elif self.global_cat_choice in [1, 5, 7,8,9,10,11,12,13,14,15,16,17,18,19,20,21]:
+        elif self.global_cat_choice in [1, 5, 7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24]:
             new_out_dim += self.hidden_dim
 
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
@@ -740,11 +741,22 @@ class BPN(nn.Module):
 
                     PIs_delay = nodes.ndata['delay'][PIs_mask]
                     mask = PIs_prob >0
-
-
-
                     w = self.mlp_w2(th.cat((etp, minmax), dim=1))
                     h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 23:
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    top2, _ = nodes_prob_tr.topk(2, dim=1)
+                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
+                    w = self.mlp_w2(th.cat((etp, top2diff), dim=1))
+                    h = th.cat((h, w * h_global), dim=1)
+                elif self.global_cat_choice == 24:
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
+                    top2, _ = nodes_prob_tr.topk(2, dim=1)
+                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
+                    w = self.mlp_w2(th.cat((etp, minmax,top2diff), dim=1))
+                    h = th.cat((h, w * h_global), dim=1)
+
                 rst = self.mlp_out_new(h)
 
                 return  rst,prob_sum, prob_dev,POs_criticalprob
