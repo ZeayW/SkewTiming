@@ -115,7 +115,7 @@ def pad_paths(paths: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     B = len(paths)
     d_in = paths[0].size(-1)
-    lengths = torch.tensor([p.size(0) for p in paths], dtype=torch.long)
+    lengths = torch.tensor([p.size(0) for p in paths], dtype=torch.long,device=paths[0].device)
     Lmax = int(lengths.max().item())
     x = torch.zeros(B, Lmax, d_in, dtype=paths[0].dtype, device=paths[0].device)
     for i, p in enumerate(paths):

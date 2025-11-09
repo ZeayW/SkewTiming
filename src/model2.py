@@ -463,6 +463,7 @@ class BPN(nn.Module):
 
         x, lengths = pad_paths(paths)
 
+
         emb = self.pathformer(x, lengths)
 
         return emb
