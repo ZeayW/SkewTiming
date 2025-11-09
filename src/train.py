@@ -771,6 +771,8 @@ if __name__ == "__main__":
             model = init_model(options)
 
             if options.pretrain_dir is not None:
+                pretrain_options = th.load('../checkpoints/{}/options.pkl'.format(os.path.split(options.pretrain_dir)[0]))
+                model = init_model(pretrain_options)
                 model.load_state_dict(th.load(options.pretrain_dir,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu"))
 
                 if options.flag_trainpath:

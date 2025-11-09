@@ -85,7 +85,7 @@ class BPN(nn.Module):
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
 
         if self.flag_transformer:
-            d_in = infeat_dim1 if flag_rawpath else hidden_dim
+            d_in = infeat_dim1+infeat_dim2 if flag_rawpath else hidden_dim
             self.pathformer = PathTransformer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=3, use_cls_token=True)
 
         if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
@@ -810,6 +810,7 @@ class BPN(nn.Module):
                 if self.flag_transformer:
                     h_path = self.path_embedding(graph,graph_info)
                     h = th.cat((h,h_path),dim=1)
+
                 rst = self.mlp_out_new(h)
 
                 return  rst,prob_sum, prob_dev,POs_criticalprob
