@@ -782,7 +782,7 @@ if __name__ == "__main__":
                     model.flag_transformer = True
                     d_in = model.infeat_dim1 if options.flag_rawpath else model.hidden_dim
                     model.pathformer = PathTransformer(d_in=d_in, d_model=model.hidden_dim, n_heads=4, n_layers=3, use_cls_token=True)
-
+                    model.mlp_out_new = MLP(model.new_out_dim+model.hidden_dim, model.hidden_dim, model.hidden_dim, 1, negative_slope=0.1)
             model = model.to(device)
 
             print('seed:', seed)

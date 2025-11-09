@@ -51,7 +51,7 @@ class PathTransformer(nn.Module):
 
     def forward(self, x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         B, L, _ = x.shape
-        print(x.shape)
+        #print(x.shape)
         h = self.input_proj(x)  # [B, L, d_model]
 
         if self.use_cls:

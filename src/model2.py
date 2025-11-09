@@ -132,7 +132,7 @@ class BPN(nn.Module):
             new_out_dim += hidden_dim
 
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
-
+        self.new_out_dim = new_out_dim
 
         out_dim = hidden_dim
         if flag_splitfeat:
