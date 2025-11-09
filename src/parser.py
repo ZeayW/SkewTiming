@@ -11,6 +11,8 @@ from queue import Queue
 options = get_options()
 rawdata_path = options.rawdata_path
 data_savepath = options.data_savepath
+flag_split = options.flag_split
+flag_group = options.flag_group
 os.makedirs(data_savepath,exist_ok=True)
 
 ntype_file = os.path.join(os.path.split(data_savepath)[0],'ntype2id.pkl')
@@ -556,6 +558,7 @@ class Parser:
                     self.edges.append(
                         (src, dst, {'bit_position': bit_pos,'is_inv':is_inv})
                     )
+
                     is_linked[src] = True
                     is_linked[dst] = True
 
@@ -579,7 +582,12 @@ class Parser:
                 new_edges.append(
                     (new_node,dst,edict)
                 )
+
+        visited = {}
         for eid, (src, dst, edict) in enumerate(self.edges):
+            if visited.get((src,dst),False):
+                continue
+            visited[(src,dst)] = True
             if self.nodes[src]['is_po']:
                 continue
             else:
@@ -591,6 +599,7 @@ class Parser:
                         (src, '{}_duplicate'.format(dst), edict)
                     )
         self.edges = new_edges
+
 
         self.nodes = {n: self.nodes[n] for n in self.nodes.keys() if self.nodes[n]['ntype'] not in ['wire', None]}
 
@@ -967,8 +976,10 @@ def main():
         design2idx = {}
         for design in os.listdir(subdir_path):
             #if '308' not in design: continue
-            if int(design.split('_')[-1]) in [110,220,183,185,319,320,329,371,383,392,399]:
+
+            if 'round6' in rawdata_path and int(design.split('_')[-1]) in [110,220,183,185,319,320,329,371,383,392,399]:
                 continue
+            
             #if design  in [ 'ldpcenc', 'systemcaes','sha3', 'wb_conmax','oc_wb_dma','mc6809', 's15850', 'tv80', 'oc_mem_ctrl','ecg','y_dct']: continue
 
             #if design in ['sin','multiplier','div','sqrt','mem_ctrl','log2','y_huff','voter']: continue
@@ -1106,14 +1117,21 @@ def main():
             if len(graph_info['delay-label_pairs'])<100:
                 continue
 
-
+            if 'round7' in design_dir:
+                if len(graph_info['delay-label_pairs'][0][1]) <= 150:
+                    continue
+                if graph_info['design_name'] in ['s15850', 's5378', 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
             if graph is not None:
                 dataset.append((graph,graph_info))
 
             print(design, '#pairs', len(graph_info['delay-label_pairs']))
-            group_id = int(int(design.split('_')[-1]) / 100)
+            if flag_group:
+                group_id = int(int(design.split('_')[-1]) / 100)
+            else:
+                group_id = 0
             designs_group[group_id].append(graph_info['design_name'])
+
             # print(graph.ndata['is_pi'])
             # print(graph_info['delay-label_pairs'])
         # exit()
@@ -1159,18 +1177,25 @@ def main():
     num_designs = len(dataset)
     print(len(dataset))
 
-    for id in designs_group.keys():
-        shuffle(designs_group[id])
+    if flag_group:
+        for id in designs_group.keys():
+            shuffle(designs_group[id])
 
     split_list = {'train': [], 'test': [], 'val': []}
+    if flag_split:
+        split_point = [0.7,0.8]
+    else:
+        split_point = [0,0]
+    
     for group_id, designs in designs_group.items():
         num_designs = len(designs)
-        split_list['train'].extend(designs[:int(0.7 * num_designs)])
-        split_list['val'].extend(designs[int(0.7 * num_designs):int(0.8 * num_designs)])
-        split_list['test'].extend(designs[int(0.8 * num_designs):])
+        split_list['train'].extend(designs[:int(split_point[0] * num_designs)])
+        split_list['val'].extend(designs[int(split_point[0] * num_designs):int(split_point[1] * num_designs)])
+        split_list['test'].extend(designs[int(split_point[1] * num_designs):])
+
     print('#train:{}, #val:{}, #test:{}'.format(len(split_list['train']), len(split_list['val']), len(split_list['test'])))
 
-    print(split_list['val'])
+    #print(split_list['val'])
     with open(os.path.join(data_savepath, 'split.pkl'), 'wb') as f:
         pickle.dump(split_list, f)
     with open(os.path.join(data_savepath,'data.pkl'),'wb') as f:

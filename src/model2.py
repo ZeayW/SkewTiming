@@ -6,6 +6,8 @@ from dgl import function as fn
 
 from utils import *
 from options import get_options
+
+from transformer import *
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
 #from transformers import BertTokenizer, MobileBertForSequenceClassification, MobileBertConfig
@@ -53,6 +55,8 @@ class BPN(nn.Module):
                  global_info_choice=0,
                  agg_choice=0,
                  attn_choice=1,
+                 flag_transformer = False,
+                 flag_rawpath = False,
                  flag_delay=False,
                  flag_degree=False,
                  flag_width=False,
@@ -65,17 +69,24 @@ class BPN(nn.Module):
         self.device = device
         self.global_cat_choice = global_cat_choice
         self.global_info_choice = global_info_choice
+        self.flag_transformer = flag_transformer
+        self.flag_rawpath = flag_rawpath
         self.flag_delay = flag_delay
         self.flag_degree = flag_degree
         self.flag_width = flag_width
         self.flag_path_supervise = flag_path_supervise
         self.flag_reverse = flag_reverse
+        self.infeat_dim = infeat_dim1
         self.hidden_dim = hidden_dim
         self.agg_choice = agg_choice
         self.attn_choice = attn_choice
         self.mlp_pi = MLP(4, int(hidden_dim / 2), hidden_dim)
         #self.linear_pi = th.nn.Linear(4, hidden_dim)
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
+
+        if self.flag_transformer:
+            d_in = infeat_dim1 if flag_rawpath else hidden_dim
+            self.pathformer = PathTransformer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=3, use_cls_token=True)
 
         if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
         if self.global_cat_choice in [9,11,12,13,15]: self.mlp_w2 = MLP(1, hidden_dim, 1)
@@ -96,6 +107,7 @@ class BPN(nn.Module):
             self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
             self.mlp_Wglobal = MLP(1, hidden_dim, 1)
 
+
         new_out_dim = 0
         if self.global_info_choice in [0, 1]:
             new_out_dim += self.hidden_dim
@@ -115,6 +127,9 @@ class BPN(nn.Module):
             new_out_dim += 1
         elif self.global_cat_choice in [1, 5, 7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24]:
             new_out_dim += self.hidden_dim
+
+        if self.flag_transformer:
+            new_out_dim += hidden_dim
 
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
 
@@ -175,6 +190,9 @@ class BPN(nn.Module):
         self.mlp_out = MLP(out_dim,hidden_dim,1)
         self.activation = th.nn.LeakyReLU(negative_slope=0)
         self.activation2 = th.nn.LeakyReLU(negative_slope=0.2)
+
+
+
 
 
     def nodes_func_module(self,nodes):
@@ -398,29 +416,58 @@ class BPN(nn.Module):
 
     def find_criticalpath(self,graph,graph_info):
         nodes_list = th.tensor(range(graph.number_of_nodes())).to(device)
-        PIs = nodes_list[graph_info['PIs_mask']]
+        #PIs = nodes_list[graph_info['PIs_mask']]
         POs = graph_info['POs']
-        PO2PI_prob = graph_info['PO2PI_prob']
+        #PO2PI_prob = graph_info['PO2PI_prob']
         PO2node_prob = graph_info['PO2node_prob']
 
+        critical_paths = []
+
         for i,po_id in enumerate(POs):
-            # print(PO2PI_prob[i])
+            #print(PO2PI_prob[i])
             nodes_prob = PO2node_prob[i]
-            critical_path =[(po_id.item(),1)]
+            #critical_path =[(po_id.item(),1)]
+            critical_path = [po_id.item()]
             cur_nodes = graph.successors(po_id,etype='reverse')
             while len(cur_nodes)!=0:
                 cur_nodes_prob = nodes_prob[cur_nodes]
                 max_id = th.argmax(cur_nodes_prob)
-                max_score = cur_nodes_prob[max_id]
-                max_nid = cur_nodes[max_id]
-                #print(max_id,max_score,cur_nodes_prob)
-                critical_path.append((max_nid.item(),max_score.item()))
-                cur_nodes = graph.successors(critical_path[-1][0], etype='reverse')
+                #max_score = cur_nodes_prob[max_id].item()
+                max_nid = cur_nodes[max_id].item()
+                #cur_nodes_name = [graph_info['nodes_name'][n] for n in cur_nodes]
+                #print('\t',graph_info['nodes_name'][max_nid],round(max_score,3),cur_nodes_name,cur_nodes_prob)
+                    #print(graph.predecessors(po_id,etype='intra_gate'))
+                #critical_path.append((max_nid,max_score))
+                critical_path.append(max_nid)
+                cur_nodes = graph.successors(critical_path[-1], etype='reverse')
 
-            # print(i,[(graph_info['nodes_name'][n[0]], round(n[1],3)) for n in critical_path])
+            critical_paths.append(critical_path)
+
+            #print(i,[(graph_info['nodes_name'][n[0]], round(n[1],3)) for n in critical_path])
+
+        return critical_paths
+
+        #exit()
+
+    def path_embedding(self,graph,graph_info):
+        flag_raw = False
+
+        critical_paths = self.find_criticalpath(graph,graph_info)
+        paths = []
+        for p in critical_paths:
+            if flag_raw:
+                path = graph.ndata['feat'][p]
+            else:
+                path = graph.ndata['h'][p]
+            paths.append(path)
+
+        x, lengths = pad_paths(paths)
+
+        emb = self.pathformer(x, lengths)
+
+        return emb
 
 
-        exit()
 
 
     def forward(self,graph,graph_info):
@@ -522,7 +569,7 @@ class BPN(nn.Module):
                 nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
 
                 # graph_info['PO2PI_prob'] = PIs_prob
-                # graph_info['PO2node_prob'] = nodes_prob_tr
+                graph_info['PO2node_prob'] = nodes_prob_tr
                 # graph_info['PIs_mask'] = PIs_mask
                 # self.find_criticalpath(graph,graph_info)
 
@@ -647,6 +694,8 @@ class BPN(nn.Module):
                     h_prob = self.mlp_probinfo(th.cat((etp_all, top2diff,etp_pi), dim=1))
                     h_global = th.cat((h_global, h_prob), dim=1)
 
+
+
                 if self.global_cat_choice == 0:
                     h = th.cat((rst,h_global),dim=1)
                 elif self.global_cat_choice == 1:
@@ -757,6 +806,9 @@ class BPN(nn.Module):
                     w = self.mlp_w2(th.cat((etp, minmax,top2diff), dim=1))
                     h = th.cat((h, w * h_global), dim=1)
 
+                if self.flag_transformer:
+                    h_path = self.path_embedding(graph,graph_info)
+                    h = th.cat((h,h_path),dim=1)
                 rst = self.mlp_out_new(h)
 
                 return  rst,prob_sum, prob_dev,POs_criticalprob

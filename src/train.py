@@ -174,6 +174,8 @@ def init_model(options):
                 device=device,
                 global_cat_choice=options.global_cat_choice,
                 global_info_choice= options.global_info_choice,
+                flag_transformer=options.flag_transformer,
+                flag_rawpath = options.flag_rawpath,
                 flag_delay=options.flag_delay,
                 flag_degree=options.flag_degree,
                 flag_width=options.flag_width,
@@ -501,7 +503,8 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                     sampled_graphs = init_criticality_matrix(sampled_graphs, POs)
 
                 for j in range(num_cases):
-                    
+                    # if j!=0: continue
+
                     torch.cuda.empty_cache()
                     flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
                     POs_label, PIs_delay, sampled_graphs,graphs_info = gather_data(sampled_data,sampled_graphs,graphs_info,j,flag_addedge)
@@ -723,7 +726,8 @@ if __name__ == "__main__":
         options.flag_baseline = input_options.flag_baseline
         options.global_out_choice = input_options.global_out_choice
         options.flag_group = input_options.flag_group
-
+        options.flag_transformer = input_options.flag_transformer
+        options.flag_rawpath = input_options.flag_rawpath
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '-' not in f and '_' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
@@ -741,6 +745,7 @@ if __name__ == "__main__":
             model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu" ))
             #usages = ['test','train']
             usages = ['test']
+
 
             for usage in usages:
                 flag_save = True
@@ -768,6 +773,10 @@ if __name__ == "__main__":
             if options.pretrain_dir is not None:
                 model.load_state_dict(th.load(options.pretrain_dir,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu"))
 
+                if options.flag_trainpath:
+                    model.flag_transformer = True
+                    d_in = model.infeat_dim1 if options.flag_rawpath else model.hidden_dim
+                    model.pathformer = PathTransformer(d_in=d_in, d_model=model.hidden_dim, n_heads=4, n_layers=3, use_cls_token=True)
 
             model = model.to(device)
 
