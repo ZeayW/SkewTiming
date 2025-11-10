@@ -7,7 +7,7 @@ from dgl import function as fn
 from utils import *
 from options import get_options
 
-from transformer import *
+from pathformer import *
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
 #from transformers import BertTokenizer, MobileBertForSequenceClassification, MobileBertConfig
@@ -55,6 +55,9 @@ class BPN(nn.Module):
                  global_info_choice=0,
                  agg_choice=0,
                  attn_choice=1,
+                 base_pe='learned',
+                 use_corr_pe = False,
+                 use_attn_bias = False,
                  flag_transformer = False,
                  flag_rawpath = False,
                  flag_delay=False,
@@ -86,7 +89,7 @@ class BPN(nn.Module):
 
         if self.flag_transformer:
             d_in = infeat_dim1+infeat_dim2 if flag_rawpath else hidden_dim
-            self.pathformer = PathTransformer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=3, use_cls_token=True)
+            self.pathformer = PathTransformer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
 
         if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
         if self.global_cat_choice in [9,11,12,13,15]: self.mlp_w2 = MLP(1, hidden_dim, 1)
@@ -427,44 +430,63 @@ class BPN(nn.Module):
             #print(PO2PI_prob[i])
             nodes_prob = PO2node_prob[i]
             #critical_path =[(po_id.item(),1)]
-            critical_path = [po_id.item()]
+            critical_path = [(po_id.item(),-1)]
             cur_nodes = graph.successors(po_id,etype='reverse')
+            pre_nid = po_id.item()
             while len(cur_nodes)!=0:
                 cur_nodes_prob = nodes_prob[cur_nodes]
                 max_id = th.argmax(cur_nodes_prob)
-                #max_score = cur_nodes_prob[max_id].item()
+                sink_score = cur_nodes_prob[max_id].item()
                 max_nid = cur_nodes[max_id].item()
+                eid = graph.edge_ids(pre_nid,max_nid,etype='reverse')
+
+                local_score = graph.edges['reverse'].data['weight'][eid].item()
+
                 #cur_nodes_name = [graph_info['nodes_name'][n] for n in cur_nodes]
                 #print('\t',graph_info['nodes_name'][max_nid],round(max_score,3),cur_nodes_name,cur_nodes_prob)
                     #print(graph.predecessors(po_id,etype='intra_gate'))
                 #critical_path.append((max_nid,max_score))
-                critical_path.append(max_nid)
-                cur_nodes = graph.successors(critical_path[-1], etype='reverse')
+                critical_path.append((max_nid,eid))
+                pre_nid = max_nid
+                cur_nodes = graph.successors(critical_path[-1][0], etype='reverse')
 
+            critical_path.reverse()
             critical_paths.append(critical_path)
-
-            #print(i,[(graph_info['nodes_name'][n[0]], round(n[1],3)) for n in critical_path])
+            #print(i,[(graph_info['nodes_name'][n[0]], round(n[1],3),round(n[2],3)) for n in critical_path])
 
         return critical_paths
 
         #exit()
 
     def path_embedding(self,graph,graph_info):
-        flag_raw = False
-
         critical_paths = self.find_criticalpath(graph,graph_info)
-        paths = []
-        for p in critical_paths:
-            if flag_raw:
-                path = graph.ndata['feat'][p]
+        paths_feat = []
+        for path in critical_paths:
+            nids = [p[0] for p in path]
+            if self.flag_rawpath:
+                path_feat = graph.ndata['feat'][nids]
             else:
-                path = graph.ndata['h'][p]
-            paths.append(path)
+                path_feat = graph.ndata['h'][nids]
 
-        x, lengths = pad_paths(paths)
+            paths_feat.append(path_feat)
 
+        x, lengths = pad_paths(paths_feat)
 
-        emb = self.pathformer(x, lengths)
+        PO2node_prob = graph_info['PO2node_prob']
+        c_local = torch.zeros(x.size(0), x.size(1),device=graph.device)  # fill per-path valid region only
+        c_sink = torch.zeros(x.size(0), x.size(1),device=graph.device)
+        for i,path in enumerate(critical_paths):
+            nids = [p[0] for p in path]
+            eids = [p[1] for p in path]
+            cs = PO2node_prob[i][nids]
+            cl = graph.edges['reverse'].data['weight'][eids].squeeze(1)
+            cl = th.roll(cl,shifts=1,dims=0)
+            cl[0] = 0
+
+            c_local[i, :len(nids)] = cl
+            c_sink[i, :len(nids)] = cs
+
+        emb = self.pathformer(x, lengths,c_local=c_local,c_sink=c_sink)
 
         return emb
 
@@ -572,7 +594,8 @@ class BPN(nn.Module):
                 # graph_info['PO2PI_prob'] = PIs_prob
                 graph_info['PO2node_prob'] = nodes_prob_tr
                 # graph_info['PIs_mask'] = PIs_mask
-                # self.find_criticalpath(graph,graph_info)
+                #self.find_criticalpath(graph,graph_info)
+                #self.path_embedding(graph,graph_info)
 
                 #print(nodes_dst.shape,th.max(nodes_dst,dim=1).values.shape)
                 #nodes_dst = nodes_dst / th.max(nodes_dst,dim=1).values

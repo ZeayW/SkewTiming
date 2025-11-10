@@ -26,6 +26,7 @@ import itertools
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
+
 options = get_options()
 device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu !=-1 else "cpu")
 R2_score = R2Score().to(device)
@@ -167,6 +168,14 @@ def get_idx_loader(data,batch_size):
 
 def init_model(options):
     if options.flag_baseline == -1:
+        if options.base_pe == 0:
+            base_pe = 'none'
+        elif options.base_pe == 1:
+            base_pe = 'learned'
+        elif options.base_pe == 2:
+            base_pe = 'sinusoidal'
+        else:
+            assert False, 'wrong positional encoding'
         model = BPN(
                 infeat_dim1=num_gate_types,
                 infeat_dim2=num_module_types,
@@ -174,6 +183,9 @@ def init_model(options):
                 device=device,
                 global_cat_choice=options.global_cat_choice,
                 global_info_choice= options.global_info_choice,
+                base_pe=base_pe,
+                use_attn_bias=options.use_attn_bias,
+                use_corr_pe=options.use_corr_pe,
                 flag_transformer=options.flag_transformer,
                 flag_rawpath = options.flag_rawpath,
                 flag_delay=options.flag_delay,
