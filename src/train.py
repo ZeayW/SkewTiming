@@ -145,9 +145,10 @@ def load_data(usage,options):
         if options.flag_filter:
             for i in range(len(graph_info['delay-label_pairs'])):
                 k = 5
-                pi2po_edges = graph_info['delay-label_pairs'][i][3]
-                graph_info['delay-label_pairs'][i][3] = filter_criticalPIs(pi2po_edges,k)
-        
+                PIs_delay, POs_label, POs_baselabel, pi2po_edges = graph_info['delay-label_pairs'][i]
+                pi2po_edges = filter_criticalPIs(pi2po_edges,k)
+                graph_info['delay-label_pairs'][i] = (PIs_delay, POs_label, POs_baselabel, pi2po_edges)
+
         if (options.test_iter or usage=='test') and options.flag_group:
             if designs_group is None:
                 loaded_data[graph_info['design_name']] = loaded_data.get(graph_info['design_name'],[])
