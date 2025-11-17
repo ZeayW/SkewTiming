@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import torch
 from queue import Queue
-from options import get_options
+from options import *
 #from model import *
 from model2 import *
 import pickle
@@ -24,8 +24,6 @@ from time import time
 import itertools
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
-
 
 options = get_options()
 device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu !=-1 else "cpu")
@@ -144,6 +142,12 @@ def load_data(usage,options):
         graph_info['delay-label_pairs'][50] = graph_info['delay-label_pairs'][0]
         graph_info['delay-label_pairs'] = graph_info['delay-label_pairs'][case_range[0]:case_range[1]]
 
+        if options.flag_filter:
+            for i in range(len(graph_info['delay-label_pairs'])):
+                k = 5
+                pi2po_edges = graph_info['delay-label_pairs'][i][3]
+                graph_info['delay-label_pairs'][i][3] = filter_criticalPIs(pi2po_edges,k)
+        
         if (options.test_iter or usage=='test') and options.flag_group:
             if designs_group is None:
                 loaded_data[graph_info['design_name']] = loaded_data.get(graph_info['design_name'],[])
@@ -187,6 +191,7 @@ def init_model(options):
                 use_attn_bias=options.use_attn_bias,
                 use_corr_pe=options.use_corr_pe,
                 flag_transformer=options.flag_transformer,
+                flag_gt = options.flag_gt,
                 flag_rawpath = options.flag_rawpath,
                 flag_delay=options.flag_delay,
                 flag_degree=options.flag_degree,
@@ -206,6 +211,20 @@ def init_model(options):
 
     return model
 
+def filter_criticalPIs(pi2po_edges,k=5):
+    res = ([],[],[])
+    count = {}
+    for i in range(len(pi2po_edges[0])):
+        src = pi2po_edges[0][i]
+        dst = pi2po_edges[1][i]
+        w = pi2po_edges[2][i]
+        count[dst] = count.get(dst,0) + 1
+        if count[dst] > k:
+            continue
+        res[0].append(src)
+        res[1].append(dst)
+        res[2].append(w)
+    return res
 
 def init(seed):
     th.manual_seed(seed)
@@ -738,8 +757,8 @@ if __name__ == "__main__":
         options.flag_baseline = input_options.flag_baseline
         options.global_out_choice = input_options.global_out_choice
         options.flag_group = input_options.flag_group
-        options.flag_transformer = input_options.flag_transformer
-        options.flag_rawpath = input_options.flag_rawpath
+
+        options = merge_with_loaded(input_options,options)
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '-' not in f and '_' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
@@ -747,7 +766,7 @@ if __name__ == "__main__":
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint,log_idx)
         with tee.StdoutTee(stdout_f):
             print(options)
-            # exit()
+
             model = init_model(options)
             model.flag_train = True
             flag_inference = False
@@ -780,14 +799,10 @@ if __name__ == "__main__":
             pass
         with tee.StdoutTee(stdout_f), tee.StderrTee(stderr_f):
 
-            model = init_model(options)
-
             if options.pretrain_dir is not None:
-                pretrain_options = th.load('../checkpoints/{}/options.pkl'.format(os.path.split(options.pretrain_dir)[0]))
-                if options.flag_continue_trainpath:
-                    pretrain_options.flag_transformer = False
-                    pretrain_options.flag_rawpath = False
-                    model = init_model(pretrain_options)
+                #pretrain_options = th.load('../checkpoints/{}/options.pkl'.format(os.path.split(options.pretrain_dir)[0]))
+
+                model = init_model(options)
                 model.load_state_dict(th.load(options.pretrain_dir,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu"))
 
                 if options.flag_continue_trainpath:
@@ -795,6 +810,8 @@ if __name__ == "__main__":
                     d_in = model.infeat_dim1 if options.flag_rawpath else model.hidden_dim
                     model.pathformer = PathTransformer(d_in=d_in, d_model=model.hidden_dim, n_heads=4, n_layers=3, use_cls_token=True)
                     model.mlp_out_new = MLP(model.new_out_dim+model.hidden_dim, model.hidden_dim, model.hidden_dim, 1, negative_slope=0.1)
+            else:
+                model = init_model(options)
             model = model.to(device)
 
             print('seed:', seed)

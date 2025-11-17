@@ -65,7 +65,7 @@ class PathTransformer(nn.Module):
         self.layers = nn.ModuleList(encoder_layers)
 
         if use_attn_bias:
-            self.corr_bias = CorrAttentionBias(alpha=1.0, beta=0.5)
+            self.corr_bias = CorrAttentionBias()
 
         self.norm_out = nn.LayerNorm(d_model)
 
@@ -103,7 +103,6 @@ class PathTransformer(nn.Module):
         else:
             if self.base_pe is not None:
                 h = self.base_pe(h)
-
         # Transformer layers
         for layer in self.layers:
             residual = h
@@ -230,6 +229,21 @@ class CorrPositionalEncoding(nn.Module):
             pe = pe.masked_fill(mask.unsqueeze(-1), 0.0)
         return base_x + pe
 
+def apply_attn_mask(scores: torch.Tensor, key_padding_mask: torch.Tensor, clamp: float = 20.0):
+    # scores: [B,H,L,L], key_padding_mask: [B,L] (True=pad)
+    # mask columns (keys) only
+    pad = key_padding_mask.unsqueeze(1).unsqueeze(2)            # [B,1,1,L]
+    scores = scores.masked_fill(pad, float("-inf"))
+
+    # If an entire row is -inf, replace with zeros to make softmax well-defined
+    all_inf = torch.isinf(scores).all(dim=-1, keepdim=True)     # [B,H,L,1]
+    scores = torch.where(all_inf, torch.zeros_like(scores), scores)
+
+    # Optional: clamp to avoid overflow
+    #scores = scores.clamp(min=-clamp, max=clamp)
+
+    return scores
+
 # --------- Attention bias from correlations ---------
 class CorrAttentionBias(nn.Module):
     """
@@ -264,8 +278,8 @@ class CorrAttentionBias(nn.Module):
 
         if mask is not None:
             pad = mask.unsqueeze(1).unsqueeze(2)  # key padding on columns
-            attn_scores = attn_scores.masked_fill(pad, float("-inf"))
-            attn_scores = attn_scores.masked_fill(pad.transpose(-1, -2), float("-inf"))
+            attn_scores = attn_scores.masked_fill(pad, -100000)
+            attn_scores = attn_scores.masked_fill(pad.transpose(-1, -2), -100000)
         return attn_scores
 
 # --------- MHA with external bias ---------
@@ -305,7 +319,7 @@ class BiasedMultiheadAttention(nn.Module):
 
         if key_padding_mask is not None:
             pad = key_padding_mask.unsqueeze(1).unsqueeze(2)  # [B,1,1,L]
-            attn_scores = attn_scores.masked_fill(pad, float("-inf"))
+            attn_scores = attn_scores.masked_fill(pad, -100000)
 
         attn_weights = attn_scores.softmax(dim=-1)
         attn_weights = F.dropout(attn_weights, p=self.mha.dropout, training=self.training)

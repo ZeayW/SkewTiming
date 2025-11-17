@@ -19,6 +19,7 @@ def get_options(args=None):
     parser.add_argument('--inv_choice',type=int,default=-1)
     parser.add_argument('--quick',action='store_true')
     parser.add_argument('--flag_continue_trainpath', action='store_true')
+    parser.add_argument('--flag_gt', action='store_true')
     parser.add_argument('--flag_transformer', action='store_true')
     parser.add_argument('--flag_rawpath', action='store_true')
     parser.add_argument('--flag_degree', action='store_true')
@@ -59,5 +60,10 @@ def get_options(args=None):
     parser.add_argument('--flag_split01',action='store_true',help="control whether use seperate node for each constant (1'b0,1'b1)")
     options = parser.parse_args(args)
 
-
     return options
+
+
+def merge_with_loaded(default_ns: argparse.Namespace, loaded: argparse.Namespace) -> argparse.Namespace:
+    d = vars(default_ns)
+    d.update(vars(loaded) or {})
+    return argparse.Namespace(**d)

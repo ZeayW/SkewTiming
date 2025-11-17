@@ -8,6 +8,8 @@ from utils import *
 from options import get_options
 
 from pathformer import *
+from pathgformer import *
+# from transformer import *
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
 #from transformers import BertTokenizer, MobileBertForSequenceClassification, MobileBertConfig
@@ -58,6 +60,7 @@ class BPN(nn.Module):
                  base_pe='learned',
                  use_corr_pe = False,
                  use_attn_bias = False,
+                 flag_gt = False,
                  flag_transformer = False,
                  flag_rawpath = False,
                  flag_delay=False,
@@ -72,6 +75,7 @@ class BPN(nn.Module):
         self.device = device
         self.global_cat_choice = global_cat_choice
         self.global_info_choice = global_info_choice
+        self.flag_gt = flag_gt
         self.flag_transformer = flag_transformer
         self.flag_rawpath = flag_rawpath
         self.flag_delay = flag_delay
@@ -90,6 +94,10 @@ class BPN(nn.Module):
         if self.flag_transformer:
             d_in = infeat_dim1+infeat_dim2 if flag_rawpath else hidden_dim
             self.pathformer = PathTransformer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
+
+        if self.flag_gt:
+            d_in = infeat_dim1+infeat_dim2 if flag_rawpath else hidden_dim
+            self.pathgformer = PathGraphFormer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=2, d_ff=128, use_corr_pe=use_corr_pe, use_corr_bias=use_attn_bias)
 
         if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
         if self.global_cat_choice in [9,11,12,13,15]: self.mlp_w2 = MLP(1, hidden_dim, 1)
@@ -132,6 +140,8 @@ class BPN(nn.Module):
             new_out_dim += self.hidden_dim
 
         if self.flag_transformer:
+            new_out_dim += hidden_dim
+        if self.flag_gt:
             new_out_dim += hidden_dim
 
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
@@ -487,6 +497,7 @@ class BPN(nn.Module):
             c_sink[i, :len(nids)] = cs
 
         emb = self.pathformer(x, lengths,c_local=c_local,c_sink=c_sink)
+        #emb = self.pathformer(x, lengths)
 
         return emb
 
@@ -833,7 +844,10 @@ class BPN(nn.Module):
                 if self.flag_transformer:
                     h_path = self.path_embedding(graph,graph_info)
                     h = th.cat((h,h_path),dim=1)
-
+                if self.flag_gt:
+                    x = graph.ndata['feat'] if self.flag_rawpath else graph.ndata['h']
+                    h_path = self.pathgformer(x=x,C=nodes_prob,sink_idx = POs)
+                    h = th.cat((h,h_path),dim=1)
                 rst = self.mlp_out_new(h)
 
                 return  rst,prob_sum, prob_dev,POs_criticalprob
