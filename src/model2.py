@@ -110,7 +110,7 @@ class BPN(nn.Module):
         if self.global_info_choice in [11,12]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [13,16,17,19,20]: self.mlp_probinfo = MLP(2, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [21]: self.mlp_probinfo = MLP(3, hidden_dim, self.probinfo_dim)
-        if self.global_info_choice in [22]: self.mlp_probinfo = MLP(3, hidden_dim, hidden_dim)
+        if self.global_info_choice in [22]: self.mlp_probinfo = MLP(1, hidden_dim, hidden_dim)
 
         if self.global_info_choice in [15]:
             self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
