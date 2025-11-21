@@ -488,7 +488,12 @@ class BPN(nn.Module):
         for i,path in enumerate(critical_paths):
             nids = [p[0] for p in path]
             eids = [p[1] for p in path]
-            cs = PO2node_prob[i][nids]
+            distance = th.tensor(list(range(len(path),0,-1)),dtype=th.float,device=graph.device)
+            distance_log = th.log(distance+1)
+            distance_lognorm = distance_log / th.max(distance_log)
+            cs = PO2node_prob[i][nids]*distance_lognorm
+            #cs = PO2node_prob[i][nids]
+
             cl = graph.edges['reverse'].data['weight'][eids].squeeze(1)
             cl = th.roll(cl,shifts=1,dims=0)
             cl[0] = 0
@@ -601,9 +606,11 @@ class BPN(nn.Module):
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
 
                 nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
-
+                #nodes_dst_tr = th.transpose(nodes_dst, 0, 1)
                 # graph_info['PO2PI_prob'] = PIs_prob
                 graph_info['PO2node_prob'] = nodes_prob_tr
+                #graph_info['PO2node_prob'] = nodes_prob_tr
+
                 # graph_info['PIs_mask'] = PIs_mask
                 #self.find_criticalpath(graph,graph_info)
                 #self.path_embedding(graph,graph_info)
