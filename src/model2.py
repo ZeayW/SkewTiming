@@ -122,7 +122,7 @@ class BPN(nn.Module):
 
 
         new_out_dim = 0
-        if self.global_info_choice in [0, 1]:
+        if self.global_info_choice in [0, 1,22]:
             new_out_dim += self.hidden_dim
         elif self.global_info_choice==2:
             new_out_dim += 2*self.hidden_dim
