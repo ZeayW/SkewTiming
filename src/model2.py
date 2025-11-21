@@ -110,6 +110,8 @@ class BPN(nn.Module):
         if self.global_info_choice in [11,12]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [13,16,17,19,20]: self.mlp_probinfo = MLP(2, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [21]: self.mlp_probinfo = MLP(3, hidden_dim, self.probinfo_dim)
+        if self.global_info_choice in [22]: self.mlp_probinfo = MLP(3, hidden_dim, hidden_dim)
+
         if self.global_info_choice in [15]:
             self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
             self.mlp_Wglobal = MLP(1, hidden_dim, 1)
@@ -735,7 +737,9 @@ class BPN(nn.Module):
                     etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
                     h_prob = self.mlp_probinfo(th.cat((etp_all, top2diff,etp_pi), dim=1))
                     h_global = th.cat((h_global, h_prob), dim=1)
-
+                elif self.global_info_choice == 22:
+                    h_etp = self.mlp_probinfo(-th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1))
+                    h_global = h_global+h_etp
 
 
                 if self.global_cat_choice == 0:
