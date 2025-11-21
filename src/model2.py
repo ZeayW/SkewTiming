@@ -101,7 +101,7 @@ class BPN(nn.Module):
 
         if self.global_cat_choice==8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2),1)
         if self.global_cat_choice in [9,11,12,13,15]: self.mlp_w2 = MLP(1, hidden_dim, 1)
-        if self.global_cat_choice in [10,14,16,18,19,23]: self.mlp_w2 = MLP(2, hidden_dim, 1)
+        if self.global_cat_choice in [10,14,16,18,19,23,25]: self.mlp_w2 = MLP(2, hidden_dim, 1)
         if self.global_cat_choice in [17,20,24]: self.mlp_w2 = MLP(3, hidden_dim, 1)
         if self.global_cat_choice in [21]: self.mlp_w2 = MLP(4, hidden_dim, 1)
 
@@ -142,7 +142,7 @@ class BPN(nn.Module):
         if self.flag_transformer:
             new_out_dim += hidden_dim
         if self.flag_gt:
-            new_out_dim += hidden_dim
+            if self.global_cat_choice!=25: new_out_dim += hidden_dim
 
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
         self.new_out_dim = new_out_dim
@@ -847,10 +847,17 @@ class BPN(nn.Module):
                     top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
                     w = self.mlp_w2(th.cat((etp, minmax,top2diff), dim=1))
                     h = th.cat((h, w * h_global), dim=1)
-
+                elif self.global_cat_choice == 25:
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    minmax = (th.max(nodes_prob_tr,dim=1).values - th.min(nodes_prob_tr,dim=1).values).unsqueeze(1)
+                    w = self.mlp_w2(th.cat((etp,minmax),dim=1))
+                    h = h + w * h_global
                 if self.flag_transformer:
                     h_path = self.path_embedding(graph,graph_info)
-                    h = th.cat((h,h_path),dim=1)
+                    if self.global_cat_choice == 25:
+                        h = h + h_path
+                    else:
+                        h = th.cat((h,h_path),dim=1)
                 if self.flag_gt:
                     x = graph.ndata['feat'] if self.flag_rawpath else graph.ndata['h']
                     h_path = self.pathgformer(x=x,C=nodes_prob,sink_idx = POs)
