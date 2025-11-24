@@ -35,10 +35,13 @@ class PathTransformer(nn.Module):
             self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
             nn.init.trunc_normal_(self.cls_token, std=0.02)
 
+        self.alpha = nn.Parameter(torch.tensor(alpha))
+        self.beta = nn.Parameter(torch.tensor(beta))
+        
         # If Corr PE is enabled, construct it; otherwise optional base PE only
         if use_corr_pe:
             self.corr_pe = CorrPositionalEncoding(
-                d_model=d_model, alpha=alpha,beta=beta,base=base_pe, use_rbf=use_rbf, n_rbf=n_rbf, dropout=pos_dropout
+                d_model=d_model, alpha=self.alpha,beta=self.beta,base=base_pe, use_rbf=use_rbf, n_rbf=n_rbf, dropout=pos_dropout
             )
             self.base_pe = None  # handled inside corr_pe
         else:
@@ -67,7 +70,7 @@ class PathTransformer(nn.Module):
         self.layers = nn.ModuleList(encoder_layers)
 
         if use_attn_bias:
-            self.corr_bias = CorrAttentionBias(alpha=alpha,beta=beta)
+            self.corr_bias = CorrAttentionBias(alpha=self.alpha,beta=self.beta)
 
         self.norm_out = nn.LayerNorm(d_model)
 
@@ -169,14 +172,16 @@ class CorrPositionalEncoding(nn.Module):
       c_sink:  [B, L] in [0,1]
       mask:    [B, L] bool, True if padded
     """
-    def __init__(self, d_model: int, alpha=1.0, beta=0.5,base: str = "sinusoidal",
+    def __init__(self, d_model: int, alpha, beta,base: str = "sinusoidal",
                  use_rbf: bool = True, n_rbf: int = 8, dropout: float = 0.0):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
         self.use_rbf = use_rbf
         self.n_rbf = n_rbf
-        self.alpha = nn.Parameter(torch.tensor(alpha))
-        self.beta = nn.Parameter(torch.tensor(beta))
+        self.alpha = alpha
+        self.beta = beta
+        # self.alpha = nn.Parameter(torch.tensor(alpha))
+        # self.beta = nn.Parameter(torch.tensor(beta))
 
         if base == "sinusoidal":
             self.base = SinusoidalPositionalEncoding(d_model)
@@ -254,10 +259,12 @@ class CorrAttentionBias(nn.Module):
     Adds correlation-based bias to attention logits.
     Use by injecting into a custom MultiheadAttention wrapper.
     """
-    def __init__(self, alpha: float = 1.0, beta: float = 0.5):
+    def __init__(self, alpha, beta):
         super().__init__()
-        self.alpha = nn.Parameter(torch.tensor(alpha))
-        self.beta = nn.Parameter(torch.tensor(beta))
+        self.alpha  = alpha
+        self.beta = beta
+        # self.alpha = nn.Parameter(torch.tensor(alpha))
+        # self.beta = nn.Parameter(torch.tensor(beta))
 
     def forward(self, attn_scores: torch.Tensor, c_local: torch.Tensor,
                 c_sink: torch.Tensor, mask: torch.Tensor):
