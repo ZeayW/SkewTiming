@@ -19,7 +19,7 @@ class PathTransformer(nn.Module):
         n_rbf: int = 8,
         use_attn_bias: bool = True,
         pos_dropout: float = 0.0,
-        alpha=1,
+        alpha=1.0,
         beta=0.5,
         norm_first: bool = True
     ):
@@ -169,7 +169,7 @@ class CorrPositionalEncoding(nn.Module):
       c_sink:  [B, L] in [0,1]
       mask:    [B, L] bool, True if padded
     """
-    def __init__(self, d_model: int, alpha=1, beta=0.5,base: str = "sinusoidal",
+    def __init__(self, d_model: int, alpha=1.0, beta=0.5,base: str = "sinusoidal",
                  use_rbf: bool = True, n_rbf: int = 8, dropout: float = 0.0):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
