@@ -19,6 +19,8 @@ class PathTransformer(nn.Module):
         n_rbf: int = 8,
         use_attn_bias: bool = True,
         pos_dropout: float = 0.0,
+        alpha=1,
+        beta=0.5,
         norm_first: bool = True
     ):
         super().__init__()
@@ -36,7 +38,7 @@ class PathTransformer(nn.Module):
         # If Corr PE is enabled, construct it; otherwise optional base PE only
         if use_corr_pe:
             self.corr_pe = CorrPositionalEncoding(
-                d_model=d_model, base=base_pe, use_rbf=use_rbf, n_rbf=n_rbf, dropout=pos_dropout
+                d_model=d_model, alpha=alpha,beta=beta,base=base_pe, use_rbf=use_rbf, n_rbf=n_rbf, dropout=pos_dropout
             )
             self.base_pe = None  # handled inside corr_pe
         else:
@@ -65,7 +67,7 @@ class PathTransformer(nn.Module):
         self.layers = nn.ModuleList(encoder_layers)
 
         if use_attn_bias:
-            self.corr_bias = CorrAttentionBias()
+            self.corr_bias = CorrAttentionBias(alpha=alpha,beta=beta)
 
         self.norm_out = nn.LayerNorm(d_model)
 
@@ -167,12 +169,14 @@ class CorrPositionalEncoding(nn.Module):
       c_sink:  [B, L] in [0,1]
       mask:    [B, L] bool, True if padded
     """
-    def __init__(self, d_model: int, base: str = "sinusoidal",
+    def __init__(self, d_model: int, alpha=1, beta=0.5,base: str = "sinusoidal",
                  use_rbf: bool = True, n_rbf: int = 8, dropout: float = 0.0):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
         self.use_rbf = use_rbf
         self.n_rbf = n_rbf
+        self.alpha = nn.Parameter(torch.tensor(alpha))
+        self.beta = nn.Parameter(torch.tensor(beta))
 
         if base == "sinusoidal":
             self.base = SinusoidalPositionalEncoding(d_model)
@@ -211,8 +215,8 @@ class CorrPositionalEncoding(nn.Module):
             # Feed zeros to get pure base PE signal, independent of base_x magnitude
             feats.append(self.base(torch.zeros_like(base_x)))
 
-        c_local = c_local.clamp(0, 1)
-        c_sink = c_sink.clamp(0, 1)
+        c_local = self.alpha*c_local.clamp(0, 1)
+        c_sink = self.beta*c_sink.clamp(0, 1)
         inter = c_local * c_sink
         raw = torch.stack([c_local, c_sink, inter], dim=-1)  # [B, L, 3]
         feats.append(raw)

@@ -91,9 +91,12 @@ class BPN(nn.Module):
         #self.linear_pi = th.nn.Linear(4, hidden_dim)
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
 
+
+        tf_dim = hidden_dim
+        #tf_dim = int(hidden_dim / 2)
         if self.flag_transformer:
             d_in = infeat_dim1+infeat_dim2 if flag_rawpath else hidden_dim
-            self.pathformer = PathTransformer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
+            self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
 
         if self.flag_gt:
             d_in = infeat_dim1+infeat_dim2 if flag_rawpath else hidden_dim
@@ -142,7 +145,7 @@ class BPN(nn.Module):
             new_out_dim += self.hidden_dim
 
         if self.flag_transformer:
-            if self.global_cat_choice!=25: new_out_dim += hidden_dim
+            if self.global_cat_choice!=25: new_out_dim += tf_dim
         if self.flag_gt:
             new_out_dim += hidden_dim
 
@@ -491,9 +494,10 @@ class BPN(nn.Module):
             nids = [p[0] for p in path]
             eids = [p[1] for p in path]
             distance = th.tensor(list(range(len(path),0,-1)),dtype=th.float,device=graph.device)
-            distance_log = th.log(distance+1)
-            distance_lognorm = distance_log / th.max(distance_log)
-            cs = PO2node_prob[i][nids]*distance_lognorm
+            distance =  distance + 1
+            distance = th.log(distance)
+            #distance = distance / th.max(distance)
+            cs = PO2node_prob[i][nids]*distance
             #cs = PO2node_prob[i][nids]
 
             cl = graph.edges['reverse'].data['weight'][eids].squeeze(1)
