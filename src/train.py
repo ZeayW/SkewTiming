@@ -146,7 +146,7 @@ def load_data(usage,options):
 
         if options.flag_filter:
             for i in range(len(graph_info['delay-label_pairs'])):
-                k = 5
+                k = 20
                 PIs_delay, POs_label, POs_baselabel, pi2po_edges = graph_info['delay-label_pairs'][i]
                 pi2po_edges = filter_criticalPIs(pi2po_edges,k)
                 graph_info['delay-label_pairs'][i] = (PIs_delay, POs_label, POs_baselabel, pi2po_edges)
@@ -705,6 +705,8 @@ def train(model):
 
                         path_loss = prob_sum - 1 * prob_dev
                         train_loss = th.mean((th.exp(1 - path_loss)) * th.abs(labels_hat-POs_label))
+
+                        #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(th.exp(1 - path_loss)
 
                         #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(prob_ce)
 
