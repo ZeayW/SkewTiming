@@ -19,8 +19,8 @@ class PathTransformer(nn.Module):
         n_rbf: int = 8,
         use_attn_bias: bool = True,
         pos_dropout: float = 0.0,
-        alpha=1.0,
-        beta=0.5,
+        alpha=0,
+        beta=1,
         norm_first: bool = True
     ):
         super().__init__()
@@ -35,9 +35,13 @@ class PathTransformer(nn.Module):
             self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
             nn.init.trunc_normal_(self.cls_token, std=0.02)
 
-        self.alpha = nn.Parameter(torch.tensor(alpha))
-        self.beta = nn.Parameter(torch.tensor(beta))
-        
+        self.alpha = alpha
+        self.beta = beta
+        # self.alpha = nn.Parameter(torch.tensor(alpha))
+        # self.beta = nn.Parameter(torch.tensor(beta))
+
+
+
         # If Corr PE is enabled, construct it; otherwise optional base PE only
         if use_corr_pe:
             self.corr_pe = CorrPositionalEncoding(

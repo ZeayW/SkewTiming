@@ -399,14 +399,21 @@ class BPN(nn.Module):
     def reduce_func_prob(self,nodes):
         prob_sum = th.sum(nodes.mailbox['mp'],dim=1)
         #prob_sum = th.sum(nodes.mailbox['mp']*nodes.mailbox['mi'], dim=1)
-        prob_max = th.max(nodes.mailbox['mp'],dim=1).values
+        #prob_max = th.max(nodes.mailbox['mp'],dim=1).values
         prob_mean = th.mean(nodes.mailbox['mp'], dim=1).unsqueeze(1)
         prob_dev = th.sum(th.abs(nodes.mailbox['mp']-prob_mean),dim=1)
+        union_prob = 1 / nodes.mailbox['mp'].shape[1]
+
+        prob_ce = th.sum(union_prob*th.log(union_prob/ (nodes.mailbox['mp']+1e-10) ),dim=1)
+        # print(nodes.mailbox['mp'].shape,union_prob)
+        # print(prob_dev,prob_ce)
+        # exit()
         #prob_dev = th.sum(nodes.mailbox['mp']*th.log(nodes.mailbox['mp']+1e-10),dim=1)
 
         #prob_dev = th.sum(th.pow(nodes.mailbox['ml'] - prob_mean,2), dim=1)
 
-        return {'prob_max':prob_max,'prob_sum':prob_sum,'prob_dev':prob_dev}
+        return {'prob_ce':prob_ce,'prob_sum':prob_sum,'prob_dev':prob_dev}
+
 
     def prop_delay(self,graph,graph_info):
         topo = graph_info['topo']
@@ -583,7 +590,7 @@ class BPN(nn.Module):
             h  = h_gnn
             rst = self.mlp_out(h_gnn)
 
-            prob_sum, prob_dev = th.tensor([0.0]),th.tensor([0.0])
+            prob_sum, prob_dev,prob_ce = th.tensor([0.0]),th.tensor([0.0]),th.tensor([0.0])
             POs_criticalprob = None
 
             if self.flag_reverse or self.flag_path_supervise:
@@ -601,9 +608,10 @@ class BPN(nn.Module):
                     POs_criticalprob = graph.ndata['prob_sum'][POs]
                     prob_sum = graph.ndata['prob_sum'][POs]
                     prob_dev = graph.ndata['prob_dev'][POs]
+                    prob_ce = graph.ndata['prob_ce'][POs]
 
                 if not self.flag_reverse:
-                    return rst, prob_sum,prob_dev,POs_criticalprob
+                    return rst, prob_sum,prob_dev,prob_ce,POs_criticalprob
 
 
                 nodes_emb = graph.ndata['h']
@@ -872,9 +880,9 @@ class BPN(nn.Module):
                     h = th.cat((h,h_path),dim=1)
                 rst = self.mlp_out_new(h)
 
-                return  rst,prob_sum, prob_dev,POs_criticalprob
+                return  rst,prob_sum, prob_dev,prob_ce,POs_criticalprob
 
-            return rst,prob_sum, prob_dev,POs_criticalprob
+            return rst,prob_sum, prob_dev,prob_ce,POs_criticalprob
 
 #
 # class Circuitformer(nn.model):

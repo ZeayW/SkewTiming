@@ -25,8 +25,10 @@ import itertools
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
+
 options = get_options()
 device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu !=-1 else "cpu")
+print(device)
 R2_score = R2Score().to(device)
 Loss = nn.MSELoss()
 Loss = nn.L1Loss()
@@ -396,7 +398,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                                                                                     graphs_info, j, flag_addedge)
                     POs_label = POs_label[POs_mask]
 
-                    cur_labels_hat, prob_sum,prob_dev,cur_POs_criticalprob = model(sampled_graphs, graphs_info)
+                    cur_labels_hat, prob_sum,prob_dev,prob_ce,cur_POs_criticalprob = model(sampled_graphs, graphs_info)
 
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
 
@@ -544,7 +546,7 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
 
                     POs_label = POs_label[POs_mask]
 
-                    cur_labels_hat, prob_sum,prob_dev,_ = model(sampled_graphs, graphs_info)
+                    cur_labels_hat, prob_sum,prob_dev,prob_ce,_ = model(sampled_graphs, graphs_info)
 
 
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
@@ -591,11 +593,22 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
         print(
             '\t{} avg\tr2={:.3f}\tmape={:.3f}'.format(
                 usage, sum(r2_list)/len(r2_list),sum(mape_list)/len(mape_list)))
+        labels = labels_all.detach().cpu().numpy().tolist()
+        labels_hat = labels_hat_all.detach().cpu().numpy().tolist()
+        ratio = ratio.detach().cpu().numpy().tolist()
+        with open('predict2.pkl', 'wb') as f:
+            pickle.dump((labels, labels_hat, ratio), f)
     else:
         if flag_infer:
             _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, test_data,batch_size, usage,save_file_dir, flag_save)
         else:
-            _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,flag_reverse,batch_size,po_bs=po_bs)
+            labels_hat_all, labels_all, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,flag_reverse,batch_size,po_bs=po_bs)
+            test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
+            labels = labels_all.detach().cpu().numpy().tolist()
+            labels_hat =  labels_hat_all.detach().cpu().numpy().tolist()
+            ratio = ratio.detach().cpu().numpy().tolist()
+            with open('predict.pkl','wb') as f:
+                pickle.dump((labels,labels_hat,ratio),f)
         print(
             '\t{}: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(usage,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio))
 
@@ -678,18 +691,23 @@ def train(model):
                     POs_label, PIs_delay, sampled_graphs, graphs_info = gather_data(sampled_data, sampled_graphs,
                                                                                     graphs_info, i, flag_addedge)
                     POs_label = POs_label[POs_mask]
-                    labels_hat,prob_sum,prob_dev,_ = model(sampled_graphs, graphs_info)
+                    labels_hat,prob_sum,prob_dev,prob_ce,_ = model(sampled_graphs, graphs_info)
                     total_num += len(POs_label)
                     train_loss = Loss(labels_hat, POs_label)
                     path_loss =th.tensor(0.0)
 
+                    #print(th.any(th.isnan(train_loss)))
                     if flag_path:
                         #path_loss = th.mean(prob_sum )
                         #path_loss = th.mean(prob_sum-1*prob_dev)
                         #train_loss += -path_loss
                         #path_loss = prob_sum
+
                         path_loss = prob_sum - 1 * prob_dev
                         train_loss = th.mean((th.exp(1 - path_loss)) * th.abs(labels_hat-POs_label))
+
+                        #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(prob_ce)
+
                         #train_loss = th.mean((th.exp(1 - path_loss)) * th.pow(labels_hat - POs_label,2))
 
 
