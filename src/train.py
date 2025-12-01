@@ -74,14 +74,18 @@ def load_data(usage,options):
     #split_file = os.path.join(data_path, 'split_new.pkl')
     with open(data_file, 'rb') as f:
         data_all = pickle.load(f)
-        design_names = [d[1]['design_name'] for d in data_all]
+        if '_case' in data_all[0][1]['design_name']:
+            design_names = [d[1]['design_name'][:d[1]['design_name'].rfind('_case')] for d in data_all]
+        else:
+            design_names = [d[1]['design_name'] for d in data_all]
+
 
     with open(split_file, 'rb') as f:
         split_list = pickle.load(f)
 
     target_list = split_list[usage]
     target_list = [n for n in target_list]
-    #print(target_list[:10])
+
     #print(split_list,target_list)
 
     data = [d for i,d in enumerate(data_all) if design_names[i] in target_list]
@@ -239,7 +243,8 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
 
     POs_label_all, PIs_delay_all,POs_criticalprob_all = None, None,None
     start_idx = 0
-    new_edges, new_edges_weight = ([], []), []
+    new_edges = ([], [])
+    new_edges_weight = None
     for data in sampled_data:
         PIs_delay, POs_label, POs_baselabel, pi2po_edges = data['delay-label_pairs'][idx][:4]
 
@@ -252,7 +257,14 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
             new_edges[0].extend([nid + start_idx for nid in pi2po_edges[0]])
             new_edges[1].extend([nid + start_idx for nid in pi2po_edges[1]])
             if len(pi2po_edges)==3:
-                new_edges_weight.extend(pi2po_edges[2])
+                pi_delays = th.tensor(pi2po_edges[2],dtype=th.float,device=device)
+                pi_weights = pi_delays
+
+                if new_edges_weight is None:
+                    new_edges_weight = pi_weights
+                else:
+                    new_edges_weight = th.cat((new_edges_weight,pi_weights),dim=0)
+                #new_edges_weight.extend(pi2po_edges[2])
 
         if len(data['delay-label_pairs'][idx]) == 5:
             POs_criticalprob = data['delay-label_pairs'][idx][4]
@@ -263,9 +275,9 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
     if flag_addedge:
         new_edges_feat = {}
         if len(new_edges_weight) > 0:
-            new_edges_feat = {'w': th.tensor(new_edges_weight, dtype=th.float).unsqueeze(1).to(device)}
+            new_edges_feat = {'w': new_edges_weight}
         sampled_graphs.add_edges(th.tensor(new_edges[0]).to(device), th.tensor(new_edges[1]).to(device),
-                                 etype='pi2po')
+                                 data=new_edges_feat,etype='pi2po')
 
 
     if POs_criticalprob_all is not None:

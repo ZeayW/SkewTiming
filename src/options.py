@@ -20,7 +20,7 @@ def get_options(args=None):
     parser.add_argument('--quick',action='store_true')
     parser.add_argument('--flag_continue_trainpath', action='store_true')
     parser.add_argument('--flag_gt', action='store_true')
-    parser.add_argument('--flag_transformer', action='store_true')
+    parser.add_argument('--flag_transformer', type=int,default=1,help='valid value in [1,2,3]')
     parser.add_argument('--flag_rawpath', action='store_true')
     parser.add_argument('--flag_degree', action='store_true')
     parser.add_argument('--flag_width', action='store_true')

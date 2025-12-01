@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple
 
-class PathTransformer(nn.Module):
+class PathTransformerW(nn.Module):
     def __init__(
         self,
         d_in: int,

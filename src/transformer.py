@@ -21,15 +21,17 @@ class PathTransformer(nn.Module):
         d_ff: int = 256,
         dropout: float = 0.1,
         use_cls_token: bool = True,
-        pos_encoding: str = "learned"  # "learned" | "sinusoidal" | "none"
+        base_pe:str = "learned",
+        use_corr_pe: bool = True,
+        use_attn_bias: bool = True,
     ):
         super().__init__()
         self.use_cls = use_cls_token
         self.input_proj = nn.Linear(d_in, d_model) if d_in != d_model else nn.Identity()
 
-        if pos_encoding == "learned":
+        if base_pe == "learned":
             self.pos_encoding = LearnedPositionalEncoding(d_model)
-        elif pos_encoding == "sinusoidal":
+        elif base_pe == "sinusoidal":
             self.pos_encoding = SinusoidalPositionalEncoding(d_model)
         else:
             self.pos_encoding = None
@@ -51,7 +53,7 @@ class PathTransformer(nn.Module):
 
     def forward(self, x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         B, L, _ = x.shape
-        #print(x.shape)
+
         h = self.input_proj(x)  # [B, L, d_model]
 
         if self.use_cls:

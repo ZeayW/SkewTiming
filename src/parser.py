@@ -109,6 +109,8 @@ def edges_srcLevel_rating(graph,nodes_level,etype):
 class Parser:
     def __init__(self,netlist_file,golden_file,flag_log=False):
         self.design_name = os.path.split(netlist_file)[-1].split('.')[0]
+        if '_case' in self.design_name:
+            self.design_name = self.design_name[:self.design_name.rfind('_case')]
         self.flag_log = flag_log
         self.netlist_file = netlist_file
         self.golden_file = golden_file
@@ -960,6 +962,68 @@ def parse_golden(file_path):
     return pi_delay,po_labels,po_criticalPIs
 
 
+def parse_golden_new(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    pi_delay = {}
+    po_labels = {}
+    po2delay2pis = {}
+    po_criticalPIs = {}
+    if 'pin to pin level synthesised' not in content:
+        assert False, "no PO info in {}".format(file_path)
+        #return None,None,None
+
+
+    pi_content,po_content = content.split('// pin to pin level synthesised\n')[:2]
+
+    for line in pi_content.split('\n'):
+        if '//' in line or len(line)==0:
+            continue
+        pi,delay = line.split(' ')
+        pi_delay[pi] = int(delay)
+    for line in po_content.split('\n'):
+        if '//' in line or len(line)==0:
+            continue
+
+        words = line.split(' ')
+        if len(words)==2:
+
+            po,label = words
+            po = po.replace(',', '')
+            print(file_path, line)
+            po_labels[po] = int(label)
+
+
+        elif len(words)==3:
+            po, pi, delay = words
+            delay = int(delay)
+            po = po.replace(',', '')
+            pi = pi.replace(',', '')
+            if 'clk' in line:
+                continue
+            po_labels[po] = max(po_labels.get(po,0),delay)
+            po_criticalPIs[po] = po_criticalPIs.get(po,[])
+            po_criticalPIs[po].append((pi,delay))
+
+        else:
+            assert False, "wrong PO info: {} in {}".format(line,file_path)
+
+    # k=5
+    # if len(po2delay2pis)!=0:
+    #     for po,label in po_labels.items():
+    #         critical_PIs = po2delay2pis[po][label]
+    #         critical_PIs = [(pi,1) for pi in critical_PIs]
+    #         # v = label
+    #         # #print(po, label,critical_PIs)
+    #         # while len(critical_PIs)<k and v>0:
+    #         #     num_remain = k-len(critical_PIs)
+    #         #     v = v -1
+    #         #     added_PIs = po2delay2pis[po].get(v,[])
+    #         #     critical_PIs.extend([(pi,v/label) for pi in added_PIs])
+    #             #print('\t',po,label,added_PIs,v)
+    #         po_criticalPIs[po] = critical_PIs
+
+    return pi_delay,po_labels,po_criticalPIs
 
 
 def main():
@@ -977,10 +1041,11 @@ def main():
         for design in os.listdir(subdir_path):
             #if '308' not in design: continue
 
-            if 'round6' in rawdata_path and int(design.split('_')[-1]) in [110,220,183,185,319,320,329,371,383,392,399]:
-                continue
+            # if 'round6' in rawdata_path and int(design.split('_')[-1]) in [110,220,183,185,319,320,329,371,383,392,399]:
+            #     continue
             
             #if design  in [ 'ldpcenc', 'systemcaes','sha3', 'wb_conmax','oc_wb_dma','mc6809', 's15850', 'tv80', 'oc_mem_ctrl','ecg','y_dct']: continue
+
 
             #if design in ['sin','multiplier','div','sqrt','mem_ctrl','log2','y_huff','voter']: continue
             #if design not in ['priority', 'adder', 'max', 'square',  'router', 'int2float', 'cavlc', 'dec', 'arbiter', 'bar']: continue
@@ -1046,10 +1111,8 @@ def main():
                 #golden_file_path = os.path.join(design_dir, 'golden_{}.txt'.format(idx))
 
                 golden_file_path = os.path.join(design_dir, '{}_{}'.format(design,idx),'golden.txt')
-                if '{}_{}'.format(design,idx) in ['adder_38','cavlc_27','cavlc_41','dec_23','arbiter_56','arbiter_87','arbiter_89','arbiter_96'
-                                                  ]:
-                    continue
-                pi_delay,po_labels,po_criticalPIs = parse_golden(golden_file_path)
+
+                pi_delay,po_labels,po_criticalPIs = parse_golden_new(golden_file_path)
                 #print('{}_{}'.format(design,idx))
                 #print(design_name,idx,po_labels)
                 if len(po_labels)!=len(graph_info['base_po_labels']):
@@ -1080,16 +1143,21 @@ def main():
                     if po_nid==-1:
                         continue
                     #po_nid = graph_info['nname2nid'][po]
-                    critical_pi_nids = [graph_info['nname2nid'].get(pi,-1) for pi,w in critical_pis]
-                    wrong_pis = [pi for pi,w in critical_pis if graph_info['nname2nid'].get(pi,-1)==-1]
+                    critical_pi_nids = [graph_info['nname2nid'].get(pi,-1) for pi,d in critical_pis]
+                    wrong_pis = [pi for pi,d in critical_pis if graph_info['nname2nid'].get(pi,-1)==-1]
                     wrong_pis_all.extend(wrong_pis)
                     critical_pi_nids = [nid for nid in critical_pi_nids if nid!=-1]
 
 
-                    critical_pi_w = [w for pi, w in critical_pis]
+                    critical_pi_d = [d for pi, d in critical_pis]
+
                     pi2po_edges[0].extend(critical_pi_nids)
                     pi2po_edges[1].extend([po_nid]*len(critical_pi_nids))
-                    pi2po_edges[2].extend(critical_pi_w)
+                    pi2po_edges[2].extend(critical_pi_d)
+
+                    # if len(critical_pi_nids)>100:
+                    #     print(idx,po,len(critical_pis))
+
 
                 # if len(wrong_pis_all) != 0: print(idx, set(wrong_pis_all))
                 # if idx==1:
