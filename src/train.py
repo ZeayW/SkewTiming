@@ -703,12 +703,12 @@ def train(model):
                         #train_loss += -path_loss
                         #path_loss = prob_sum
 
-                        path_loss = prob_sum - 1 * prob_dev
-                        train_loss = th.mean((th.exp(1 - path_loss)) * th.abs(labels_hat-POs_label))
+                        # path_loss = prob_sum - 1 * prob_dev
+                        # train_loss = th.mean((th.exp(1 - path_loss)) * th.abs(labels_hat-POs_label))
 
-                        #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(th.exp(1 - path_loss)
+                        #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(th.exp(1 - path_loss))
 
-                        #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(prob_ce)
+                        train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(prob_ce)
 
                         #train_loss = th.mean((th.exp(1 - path_loss)) * th.pow(labels_hat - POs_label,2))
 
