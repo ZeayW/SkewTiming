@@ -453,16 +453,17 @@ class BPN(nn.Module):
     def prop_backward_new(self, graph, graph_info):
         topo_r = graph_info['topo_r']
 
+        feat_name = 'feat' if self.flag_rawpath else 'h'
         ep_path_lengths = graph.ndata['level'][graph_info['POs']] + 1
         ep_path_lengths = ep_path_lengths.squeeze(1)
-        ep_path_feat = graph.ndata['feat'][graph_info['POs']]
+        ep_path_feat = graph.ndata[feat_name][graph_info['POs']]
         ep_path_feat = ep_path_feat.reshape(ep_path_feat.shape[0], 1, ep_path_feat.shape[1])  # N_ep * d_f
         with graph.local_scope():
             for l, nodes in enumerate(topo_r[1:]):
                 graph.pull(nodes, self.message_func_reverse, self.reduce_fun_reverse, etype='reverse')
                 nodes_prob_l = graph.ndata['hp'][nodes]
                 nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-                nodes_feat_l = graph.ndata['feat'][nodes]
+                nodes_feat_l = graph.ndata[feat_name][nodes]
                 ep_feat_sum_l = th.matmul(nodes_prob_l_tr, nodes_feat_l)  # N_ep * d_f
                 ep_feat_sum_l = ep_feat_sum_l.reshape(ep_feat_sum_l.shape[0], 1, ep_feat_sum_l.shape[1])
                 ep_path_feat = th.cat((ep_path_feat, ep_feat_sum_l), dim=1)

@@ -70,6 +70,7 @@ def load_data(usage,options):
             designs_group = pickle.load(f)
 
 
+
     #designs_group = None
     #split_file = os.path.join(data_path, 'split_new.pkl')
     with open(data_file, 'rb') as f:
@@ -82,6 +83,12 @@ def load_data(usage,options):
 
     with open(split_file, 'rb') as f:
         split_list = pickle.load(f)
+
+
+    for case_id in [110,220,183,185,319,320,329,371,383,392,399]:
+        split_list['train'].append('random_logic_00{}'.format(case_id))
+    with open(os.path.join(os.path.split(data_path)[0], 'split_new2.pkl'),'wb') as f:
+        pickle.dump(split_list,f)
 
     target_list = split_list[usage]
     target_list = [n for n in target_list]
@@ -171,7 +178,7 @@ def load_data(usage,options):
     return loaded_data
 
 def get_idx_loader(data,batch_size):
-    drop_last = False
+    drop_last = True
     sampler = SubsetRandomSampler(th.arange(len(data)))
     idx_loader = DataLoader([i for i in range(len(data))], sampler=sampler, batch_size=batch_size,
                             drop_last=drop_last)
