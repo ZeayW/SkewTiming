@@ -85,10 +85,10 @@ def load_data(usage,options):
         split_list = pickle.load(f)
 
 
-    for case_id in [110,220,183,185,319,320,329,371,383,392,399]:
-        split_list['train'].append('random_logic_00{}'.format(case_id))
-    with open(os.path.join(os.path.split(data_path)[0], 'split_new2.pkl'),'wb') as f:
-        pickle.dump(split_list,f)
+    # for case_id in [110,220,183,185,319,320,329,371,383,392,399]:
+    #     split_list['train'].append('random_logic_00{}'.format(case_id))
+    # with open(os.path.join(os.path.split(data_path)[0], 'split_new2.pkl'),'wb') as f:
+    #     pickle.dump(split_list,f)
 
     target_list = split_list[usage]
     target_list = [n for n in target_list]
