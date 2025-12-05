@@ -177,8 +177,9 @@ def load_data(usage,options):
 
     return loaded_data
 
-def get_idx_loader(data,batch_size):
-    drop_last = True
+def get_idx_loader(data,batch_size,flag_train):
+    drop_last =  flag_train and len(data) % batch_size < max(batch_size/2,8)
+
     sampler = SubsetRandomSampler(th.arange(len(data)))
     idx_loader = DataLoader([i for i in range(len(data))], sampler=sampler, batch_size=batch_size,
                             drop_last=drop_last)
@@ -520,7 +521,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
 def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
 
     #batch_size = options.batch_size if flag_reverse else len(test_data)
-    test_idx_loader = get_idx_loader(test_data, batch_size)
+    test_idx_loader = get_idx_loader(test_data, batch_size,False)
     model.flag_train = False
     # print(len(test_data))
     # print(test_data[0])
@@ -642,7 +643,7 @@ def train(model):
     test_data = load_data('test',options)
     print("Data successfully loaded")
 
-    train_idx_loader = get_idx_loader(train_data,options.batch_size)
+    train_idx_loader = get_idx_loader(train_data,options.batch_size,True)
 
     optim = th.optim.Adam(
         model.parameters(), options.learning_rate, weight_decay=options.weight_decay
@@ -797,6 +798,7 @@ if __name__ == "__main__":
         options.flag_baseline = input_options.flag_baseline
         options.global_out_choice = input_options.global_out_choice
         options.flag_group = input_options.flag_group
+        #options.flag_transformer = input_options.flag_transformer
 
         options = merge_with_loaded(input_options,options)
 

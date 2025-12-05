@@ -95,11 +95,13 @@ class BPN(nn.Module):
 
         tf_dim = hidden_dim
         d_in = infeat_dim1 + infeat_dim2 if flag_rawpath else hidden_dim
+        if flag_degree and flag_rawpath:
+            d_in += 1
         #tf_dim = int(hidden_dim / 2)
         if self.flag_transformer in [1,3]:
-            self.pathformerW = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
+            self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
         if self.flag_transformer in [2,3]:
-            self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, use_cls_token=True)
+            self.pathformer2 = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, use_cls_token=True)
 
         if self.flag_gt:
             d_in = infeat_dim1+infeat_dim2 if flag_rawpath else hidden_dim
@@ -113,7 +115,7 @@ class BPN(nn.Module):
 
 
         self.probinfo_dim = 32
-        if self.global_info_choice in [11,12]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
+        if self.global_info_choice in [11,12,23]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [13,16,17,19,20]: self.mlp_probinfo = MLP(2, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [21]: self.mlp_probinfo = MLP(3, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [22]: self.mlp_probinfo = MLP(1, hidden_dim, hidden_dim)
@@ -142,6 +144,8 @@ class BPN(nn.Module):
             new_out_dim += 2*hidden_dim + self.probinfo_dim
         elif  self.global_info_choice in [12,18,19,20,21]:
             new_out_dim += hidden_dim + self.probinfo_dim
+        elif  self.global_info_choice in [23]:
+            new_out_dim += self.probinfo_dim
         if self.global_cat_choice in [0, 3, 4]:
             new_out_dim += 1
         elif self.global_cat_choice in [1, 5, 7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24]:
@@ -175,9 +179,7 @@ class BPN(nn.Module):
 
         feat_dim_m =  self.infeat_dim2 + 1
         feat_dim_g = self.infeat_dim1
-        if self.flag_degree:
-            feat_dim_m += 1
-            feat_dim_g += 1
+
         if self.flag_width:
             feat_dim_m +=1
 
@@ -247,8 +249,7 @@ class BPN(nn.Module):
         #h_dst = th.cat((edges.data['bit_position']/edges.dst['width'],edges.dst[self.feat_name2]),dim=1)
         h_dst = th.cat((edges.data['bit_position'] , edges.dst[self.feat_name2]), dim=1)
         #print(th.sum(edges.data['bit_position']/edges.dst['width'])/len(edges.data['bit_position']))
-        if self.flag_degree:
-            h_dst = th.cat((h_dst,edges.dst['degree']),dim=1)
+
         if self.flag_width:
             h_dst = th.cat((h_dst,edges.dst['width2']),dim=1)
 
@@ -311,8 +312,7 @@ class BPN(nn.Module):
 
     def edge_msg_gate(self, edges):
         h_dst = edges.dst[self.feat_name2]
-        if self.flag_degree:
-            h_dst = th.cat((h_dst,edges.dst['degree']),dim=1)
+
 
         #h_dst = self.linear_feat_gate(h_dst)
 
@@ -456,20 +456,24 @@ class BPN(nn.Module):
         feat_name = 'feat' if self.flag_rawpath else 'h'
         ep_path_lengths = graph.ndata['level'][graph_info['POs']] + 1
         ep_path_lengths = ep_path_lengths.squeeze(1)
-        ep_path_feat = graph.ndata[feat_name][graph_info['POs']]
+        feat_p = graph.ndata[feat_name]
+        if self.flag_rawpath and self.flag_degree:
+            feat_p = th.cat((feat_p,graph.ndata['degree']),dim=1)
+        ep_path_feat =feat_p[graph_info['POs']]
+
         ep_path_feat = ep_path_feat.reshape(ep_path_feat.shape[0], 1, ep_path_feat.shape[1])  # N_ep * d_f
         with graph.local_scope():
             for l, nodes in enumerate(topo_r[1:]):
                 graph.pull(nodes, self.message_func_reverse, self.reduce_fun_reverse, etype='reverse')
                 nodes_prob_l = graph.ndata['hp'][nodes]
                 nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-                nodes_feat_l = graph.ndata[feat_name][nodes]
+                nodes_feat_l = feat_p[nodes]
                 ep_feat_sum_l = th.matmul(nodes_prob_l_tr, nodes_feat_l)  # N_ep * d_f
                 ep_feat_sum_l = ep_feat_sum_l.reshape(ep_feat_sum_l.shape[0], 1, ep_feat_sum_l.shape[1])
                 ep_path_feat = th.cat((ep_path_feat, ep_feat_sum_l), dim=1)
 
             #print(ep_path_feat.shape,ep_path_lengths.shape,th.max(ep_path_lengths))
-            ep_path_emb = self.pathformer(ep_path_feat,ep_path_lengths)
+            ep_path_emb = self.pathformer2(ep_path_feat,ep_path_lengths)
 
             return graph.ndata['hp'], graph.ndata['hd'],ep_path_emb
 
@@ -521,6 +525,8 @@ class BPN(nn.Module):
             nids = [p[0] for p in path]
             if self.flag_rawpath:
                 path_feat = graph.ndata['feat'][nids]
+                if self.flag_degree:
+                    path_feat = th.cat((path_feat,graph.ndata['degree'][nids]),dim=1)
             else:
                 path_feat = graph.ndata['h'][nids]
 
@@ -539,6 +545,7 @@ class BPN(nn.Module):
             distance = th.log(distance)
             #distance = distance / th.max(distance)
             cs = PO2node_prob[i][nids]*distance
+            #print('a',th.sum(cs))
             #cs = PO2node_prob[i][nids]
 
             cl = graph.edges['reverse'].data['weight'][eids].squeeze(1)
@@ -548,7 +555,10 @@ class BPN(nn.Module):
             c_local[i, :len(nids)] = cl
             c_sink[i, :len(nids)] = cs
 
-        emb = self.pathformerW(x, lengths,c_local=c_local,c_sink=c_sink)
+        emb = self.pathformer(x, lengths,c_local=c_local,c_sink=c_sink)
+        #emb = self.pathformer(x, lengths)
+        #print('e', th.sum(emb))
+
         #emb = self.pathformer(x, lengths)
 
         return emb
@@ -658,7 +668,10 @@ class BPN(nn.Module):
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
 
                 nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
-                #nodes_dst_tr = th.transpose(nodes_dst, 0, 1)
+
+                # nodes_dst_tr = th.transpose(th.log(nodes_dst+1), 0, 1)
+                # nodes_prob_tr = nodes_prob_tr*nodes_dst_tr
+
                 # graph_info['PO2PI_prob'] = PIs_prob
                 graph_info['PO2node_prob'] = nodes_prob_tr
                 #graph_info['PO2node_prob'] = nodes_prob_tr
@@ -790,7 +803,10 @@ class BPN(nn.Module):
                 elif self.global_info_choice == 22:
                     h_etp = self.mlp_probinfo(-th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1))
                     h_global = h_global+h_etp
-
+                elif self.global_info_choice == 23:
+                    h_etp = self.mlp_probinfo(
+                        -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
+                    h_global =  h_etp
 
                 if self.global_cat_choice == 0:
                     h = th.cat((rst,h_global),dim=1)
@@ -910,6 +926,8 @@ class BPN(nn.Module):
 
                 if self.flag_transformer == 1:
                     h_pathW = self.path_embedding(graph,graph_info)
+                    # print('f',th.sum(h_pathW),th.sum(h))
+                    # exit()
                     h = th.cat((h,h_pathW),dim=1)
                 elif self.flag_transformer == 2:
                     h = th.cat((h,h_path),dim=1)
