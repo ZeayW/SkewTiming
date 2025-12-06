@@ -7,9 +7,11 @@ from dgl import function as fn
 from utils import *
 from options import get_options
 
-from pathformer import *
+
 from transformer import PathTransformer
 from pathgformer import *
+#from pathformer import *
+from pathformer2 import *
 # from transformer import *
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
@@ -556,6 +558,9 @@ class BPN(nn.Module):
             c_sink[i, :len(nids)] = cs
 
         emb = self.pathformer(x, lengths,c_local=c_local,c_sink=c_sink)
+        #emb2 = self.pathformer(x, lengths)
+
+
         #emb = self.pathformer(x, lengths)
         #print('e', th.sum(emb))
 
