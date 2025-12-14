@@ -3,6 +3,16 @@ import dgl
 from torch import nn
 from dgl import function as fn
 from options import get_options
+import matplotlib.pyplot as plt
+import pickle
+import numpy as np
+import matplotlib as mpl
+mpl.rcParams['font.size'] = 11          # 全局默认文字
+mpl.rcParams['axes.titlesize'] = 12     # 标题
+mpl.rcParams['axes.labelsize'] = 11     # 轴标签
+mpl.rcParams['xtick.labelsize'] = 11    # x刻度
+mpl.rcParams['ytick.labelsize'] = 11    # y刻度
+mpl.rcParams['legend.fontsize'] = 11    # 图例
 
 device = th.device("cuda:0" if th.cuda.is_available()  else "cpu")
 
@@ -57,6 +67,26 @@ def gen_topo(graph,flag_reverse=False):
 
     return topo
 
+
+def gen_level(graph):
+
+    levels = []
+    nodes_list = th.tensor(range(graph.number_of_nodes()),device=graph.device)
+    POs_nid = nodes_list[graph.ndata['is_po'] == 1]
+    levels.append(POs_nid)
+    cur_nodes = POs_nid
+    #pre_nid = po_id.item()
+    #print(len(cur_nodes))
+    while True:
+        _,cur_nodes = graph.out_edges(cur_nodes,etype='reverse')
+
+        cur_nodes = th.unique(cur_nodes)
+        #print(len(cur_nodes))
+        if len(cur_nodes)==0:
+            break
+        levels.append(cur_nodes)
+    #exit()
+    return levels
 
 def add_newEtype(graph,new_etype,new_edges,new_edge_feats):
     graph = graph.to(th.device('cpu'))
@@ -222,3 +252,64 @@ def filter_list(l, idxs):
     return new_l
 
 
+
+def draw_bar():
+    device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
+    with open('predict2.pkl','rb') as f:
+        labels, labels_hat, ratio = pickle.load(f)
+    print('----Loaded')
+    error = [(r-1)*100 for r in ratio]
+    error = th.tensor(error,device=device)
+    x = []
+    y = []
+    indexs = list(range(-25, 30,5))
+    for i, e in enumerate(indexs):
+        if i == 0:
+            num = len(error[error <= e])
+        elif i == len(indexs) - 1:
+            num = len(error[error >= e])
+        else:
+            num = len(error[th.logical_and(error >= e-2.5, error < e + 2.5)])
+        x.append(e)
+        y.append(num / len(error))
+    # # plt.bar(x,y)
+    # plt.xlabel('error（%）')
+    # plt.ylabel('percentage（%）')
+    # plt.bar(x, y, width=0.03)
+    # print(x)
+    # print(y)
+    x = np.array(x)
+    y = np.array(y)
+    plt.figure(figsize=(7.5, 4.8), dpi=150)
+    bar_width = 3
+    colors = plt.cm.Blues(0.6 + 0.4 * (y - y.min()) / (y.max() - y.min() + 1e-12))
+    plt.bar(x, y, width=bar_width, color=colors, edgecolor='black', linewidth=0.6)
+
+    # 仅设置 x/y 轴字体为 11pt
+    ax = plt.gca()
+    ax.set_xlabel("误差 x", fontsize=13)
+    ax.set_ylabel("占比 y", fontsize=13)
+    ax.tick_params(axis='x', labelsize=13)
+    ax.tick_params(axis='y', labelsize=13)
+
+    # 柱顶标注
+    for xi, yi in zip(x, y):
+        plt.text(xi, yi + max(y) * 0.01, f"{yi * 100:.2f}%", ha='center', va='bottom',fontsize=14)
+
+    # y 轴百分比
+    from matplotlib.ticker import FuncFormatter
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v * 100:.0f}%"))
+
+    # plt.title("误差-占比柱状分布")
+    plt.grid(axis='y', linestyle='--', alpha=0.4)
+    plt.xticks(x)
+    plt.margins(x=0.02)
+    plt.tight_layout()
+    plt.show()
+    print(list(zip(x,y)))
+
+    plt.savefig('bar5.png')
+
+
+if __name__ == "__main__":
+    draw_bar()
