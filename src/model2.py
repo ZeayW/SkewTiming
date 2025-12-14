@@ -6,17 +6,42 @@ from dgl import function as fn
 
 from utils import *
 from options import get_options
-
+import concurrent.futures as cf
 
 from transformer import PathTransformer
 from pathgformer import *
-#from pathformer import *
-from pathformer2 import *
+from pathformer import *
+#from pathformer2 import *
 # from transformer import *
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
 #from transformers import BertTokenizer, MobileBertForSequenceClassification, MobileBertConfig
 
+def row_softmax_on_nonzero(x: torch.Tensor) -> torch.Tensor:
+    """
+    x: 2D tensor of shape (N, D)
+    Returns a tensor of same shape where, for each row,
+    softmax is applied only to non-zero elements.
+    """
+    # Boolean mask of non-zero elements
+    mask = x != 0
+    if len(x[mask])==0:
+        return x
+    # For numerical stability, subtract max per row over non-zero entries
+    # Fill zeros with very large negative so they don't affect max
+    neg_inf = torch.finfo(x.dtype).min
+    x_masked_for_max = torch.where(mask, x, torch.full_like(x, neg_inf))
+    row_max = x_masked_for_max.max(dim=1, keepdim=True).values
+
+    # Compute exp only on non-zero, zero elsewhere
+    exps = torch.where(mask, torch.exp(x - row_max), torch.zeros_like(x))
+
+    # Row-wise sum over non-zero entries
+    row_sum = exps.sum(dim=1, keepdim=True)
+
+    # Avoid division by zero when a row is all zeros
+    out = torch.where(row_sum > 0, exps / row_sum, torch.zeros_like(exps))
+    return out
 
 def cat_tensor(t1,t2):
     if t1 is None:
@@ -100,10 +125,13 @@ class BPN(nn.Module):
         if flag_degree and flag_rawpath:
             d_in += 1
         #tf_dim = int(hidden_dim / 2)
-        if self.flag_transformer in [1,3]:
-            self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
-        if self.flag_transformer in [2,3]:
-            self.pathformer2 = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, use_cls_token=True)
+        if self.flag_transformer in [1,3,4]:
+            #self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
+            self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,
+                                               use_cls_token=True)
+
+        if self.flag_transformer in [2,3,4]:
+            self.pathformer2 = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_cls_token=True)
 
         if self.flag_gt:
             d_in = infeat_dim1+infeat_dim2 if flag_rawpath else hidden_dim
@@ -117,7 +145,7 @@ class BPN(nn.Module):
 
 
         self.probinfo_dim = 32
-        if self.global_info_choice in [11,12,23]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
+        if self.global_info_choice in [11,12,23,24,25]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [13,16,17,19,20]: self.mlp_probinfo = MLP(2, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [21]: self.mlp_probinfo = MLP(3, hidden_dim, self.probinfo_dim)
         if self.global_info_choice in [22]: self.mlp_probinfo = MLP(1, hidden_dim, hidden_dim)
@@ -129,7 +157,8 @@ class BPN(nn.Module):
         if self.global_info_choice in [18]:
             self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
             self.mlp_Wglobal = MLP(1, hidden_dim, 1)
-
+        if self.global_info_choice in [24,25]:
+            self.mlp_global = MLP(infeat_dim1 + infeat_dim2, hidden_dim, hidden_dim)
 
         new_out_dim = 0
         if self.global_info_choice in [0, 1,22]:
@@ -144,7 +173,7 @@ class BPN(nn.Module):
             new_out_dim += 2*hidden_dim + 1
         elif  self.global_info_choice in [11,13,14,15,16,17]:
             new_out_dim += 2*hidden_dim + self.probinfo_dim
-        elif  self.global_info_choice in [12,18,19,20,21]:
+        elif  self.global_info_choice in [12,18,19,20,21,24,25]:
             new_out_dim += hidden_dim + self.probinfo_dim
         elif  self.global_info_choice in [23]:
             new_out_dim += self.probinfo_dim
@@ -155,6 +184,8 @@ class BPN(nn.Module):
 
         if self.flag_transformer in [1,2,3]:
             if self.global_cat_choice!=25: new_out_dim += tf_dim
+        elif self.flag_transformer in [4]:
+            if self.global_cat_choice!=25: new_out_dim += 2*tf_dim
         if self.flag_gt:
             new_out_dim += hidden_dim
 
@@ -368,6 +399,28 @@ class BPN(nn.Module):
     def reduce_fun_reverse(self,nodes):
         return {'hp':th.sum(nodes.mailbox['mp'],dim=1),'hd':th.max(nodes.mailbox['dst'],dim=1).values}
 
+
+    def reduce_func_maxprob(self,nodes):
+
+        max_prob = th.max(nodes.mailbox['p'], dim=1).values
+        #print('ee', max_prob.shape, len(nodes))
+        return {'max_prob':max_prob}
+
+    def message_func_maxprob_r(self,edges):
+
+        is_critical = th.logical_and(edges.src['is_critical'],edges.src['max_prob'] == edges.dst['hp'])
+        is_critical =  th.logical_and(is_critical, edges.dst['hp']!=0)
+
+        # exit()
+        return {'is_critical':is_critical}
+
+    def reduce_func_maxprob_r(self,nodes):
+
+        is_critical = th.any(nodes.mailbox['is_critical'],dim=1)
+
+        #print(mask.shape,mask)
+        return {'is_critical':is_critical}
+
     def message_func_delay(self,edges):
         return {'md': edges.src['delay'],'w':edges.data['weight']}
         #return {'md':edges.src['delay']}
@@ -466,9 +519,13 @@ class BPN(nn.Module):
         ep_path_feat = ep_path_feat.reshape(ep_path_feat.shape[0], 1, ep_path_feat.shape[1])  # N_ep * d_f
         with graph.local_scope():
             for l, nodes in enumerate(topo_r[1:]):
+
                 graph.pull(nodes, self.message_func_reverse, self.reduce_fun_reverse, etype='reverse')
+
                 nodes_prob_l = graph.ndata['hp'][nodes]
                 nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
+                #nodes_prob_l_tr = row_topoon_nonzero(nodes_prob_l_tr)
+
                 nodes_feat_l = feat_p[nodes]
                 ep_feat_sum_l = th.matmul(nodes_prob_l_tr, nodes_feat_l)  # N_ep * d_f
                 ep_feat_sum_l = ep_feat_sum_l.reshape(ep_feat_sum_l.shape[0], 1, ep_feat_sum_l.shape[1])
@@ -479,48 +536,87 @@ class BPN(nn.Module):
 
             return graph.ndata['hp'], graph.ndata['hd'],ep_path_emb
 
+
     def find_criticalpath(self,graph,graph_info):
-        nodes_list = th.tensor(range(graph.number_of_nodes())).to(device)
-        #PIs = nodes_list[graph_info['PIs_mask']]
         POs = graph_info['POs']
-        #PO2PI_prob = graph_info['PO2PI_prob']
         PO2node_prob = graph_info['PO2node_prob']
 
         critical_paths = []
 
         for i,po_id in enumerate(POs):
-            #print(PO2PI_prob[i])
             nodes_prob = PO2node_prob[i]
-            #critical_path =[(po_id.item(),1)]
             critical_path = [(po_id.item(),-1)]
             cur_nodes = graph.successors(po_id,etype='reverse')
             pre_nid = po_id.item()
             while len(cur_nodes)!=0:
                 cur_nodes_prob = nodes_prob[cur_nodes]
                 max_id = th.argmax(cur_nodes_prob)
-                #sink_score = cur_nodes_prob[max_id].item()
                 max_nid = cur_nodes[max_id].item()
                 eid = graph.edge_ids(pre_nid,max_nid,etype='reverse')
-
-                #local_score = graph.edges['reverse'].data['weight'][eid].item()
-
-                #cur_nodes_name = [graph_info['nodes_name'][n] for n in cur_nodes]
-                #print('\t',graph_info['nodes_name'][max_nid],round(max_score,3),cur_nodes_name,cur_nodes_prob)
-                    #print(graph.predecessors(po_id,etype='intra_gate'))
-                #critical_path.append((max_nid,max_score))
                 critical_path.append((max_nid,eid))
                 pre_nid = max_nid
                 cur_nodes = graph.successors(critical_path[-1][0], etype='reverse')
 
             critical_path.reverse()
             critical_paths.append(critical_path)
-            #print(i,[(graph_info['nodes_name'][n[0]], round(n[1],3),round(n[2],3)) for n in critical_path])
 
         return critical_paths
 
-        #exit()
+    def path_embedding2(self,graph,graph_info):
+        feat_name = 'feat' if self.flag_rawpath else 'h'
+        feat_p = graph.ndata[feat_name]
+        if self.flag_rawpath and self.flag_degree:
+            feat_p = th.cat((feat_p, graph.ndata['degree']), dim=1)
+        path_feat = feat_p[graph_info['POs']]
+        path_feat = path_feat.reshape(path_feat.shape[0], 1, path_feat.shape[1])
+        path_lengths = th.zeros(len(graph_info['POs']),dtype=th.float,device=graph.device)
+        is_ended = th.zeros(len(graph_info['POs']),dtype=th.bool,device=graph.device)
+
+        level = graph_info['level']
+        #level = graph_info['topo_r']
+        #graph.ndata['is_critical'] = th.zeros()
+        pre_nodes = level[0]
+
+        with graph.local_scope():
+            graph.ndata['hp'] = graph_info['nodes_prob']
+            for l, nodes in enumerate(level[1:]):
+                isModule_mask = graph.ndata['is_module'][pre_nodes] == 1
+                isGate_mask = graph.ndata['is_module'][pre_nodes] == 0
+                pre_nodes_gate = pre_nodes[isGate_mask]
+                pre_nodes_module = pre_nodes[isModule_mask]
+                if len(pre_nodes_gate) !=0:
+                    graph.pull(pre_nodes_gate,fn.copy_u('hp','p'),self.reduce_func_maxprob, etype='intra_gate')
+                if len(pre_nodes_module) !=0:
+                    graph.pull(pre_nodes_module,fn.copy_u('hp','p'),self.reduce_func_maxprob, etype='intra_module')
+                #print('aaa')
+                graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
+                critical_mask = th.transpose(graph.ndata['is_critical'][nodes],0,1)
+
+                is_ended_mask = th.logical_and(th.sum(critical_mask,dim=1) == 0, ~is_ended)
+                is_ended[is_ended_mask] = True
+                path_lengths[is_ended_mask] = l + 2
+                if th.sum(critical_mask)==0:
+                    break
+                nodes_prob_l = graph.ndata['hp'][nodes]
+                nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
+                nodes_prob_l_tr = nodes_prob_l_tr * critical_mask
+                nodes_feat_l = feat_p[nodes]
+
+                path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
+                num_critical = th.sum(critical_mask,dim=1,keepdim=True)
+                path_feat_l = path_feat_l / num_critical.clamp(min=1)
+                path_feat_l = path_feat_l.reshape(path_feat_l.shape[0],1,path_feat_l.shape[1])
+                path_feat = th.cat((path_feat,path_feat_l),dim=1)
+
+                pre_nodes = nodes
+
+        path_emb = self.pathformer(path_feat,path_lengths)
+
+        return path_emb
+           # return graph.ndata['hp'], graph.ndata['hd']
 
     def path_embedding(self,graph,graph_info):
+
         critical_paths = self.find_criticalpath(graph,graph_info)
         paths_feat = []
         for path in critical_paths:
@@ -567,9 +663,6 @@ class BPN(nn.Module):
         #emb = self.pathformer(x, lengths)
 
         return emb
-
-
-
 
     def forward(self,graph,graph_info):
 
@@ -647,7 +740,7 @@ class BPN(nn.Module):
                 POs_criticalprob = None
                 POs = graph_info['POs']
                 h_path = None
-                if self.flag_transformer in [2,3]:
+                if self.flag_transformer in [2,3,4]:
                     nodes_prob, nodes_dst, h_path = self.prop_backward_new(graph,graph_info)
                 else:
                     nodes_prob,nodes_dst = self.prop_backward(graph,graph_info)
@@ -666,6 +759,8 @@ class BPN(nn.Module):
                 if not self.flag_reverse:
                     return rst, prob_sum,prob_dev,prob_ce,POs_criticalprob
 
+                #print(th.sum(nodes_prob),th.sum(graph.ndata['hp']))
+                #graph.ndata['hp'] = nodes_prob
 
                 nodes_emb = graph.ndata['h']
 
@@ -678,18 +773,28 @@ class BPN(nn.Module):
                 # nodes_prob_tr = nodes_prob_tr*nodes_dst_tr
 
                 # graph_info['PO2PI_prob'] = PIs_prob
+                graph_info['nodes_prob'] = nodes_prob
                 graph_info['PO2node_prob'] = nodes_prob_tr
                 #graph_info['PO2node_prob'] = nodes_prob_tr
 
                 # graph_info['PIs_mask'] = PIs_mask
                 #self.find_criticalpath(graph,graph_info)
                 #self.path_embedding(graph,graph_info)
-
                 #print(nodes_dst.shape,th.max(nodes_dst,dim=1).values.shape)
                 #nodes_dst = nodes_dst / th.max(nodes_dst,dim=1).values
                 #nodes_prob_tr = th.transpose(nodes_prob*nodes_dst, 0, 1)
 
-                h_global = th.matmul(nodes_prob_tr, nodes_emb)
+                #h_global = th.matmul(nodes_prob_tr, nodes_emb)
+
+                if self.global_info_choice == 24:
+                    h_global = th.matmul(nodes_prob_tr,graph.ndata['feat'])
+                    h_global = self.mlp_global(h_global)
+                elif self.global_info_choice == 25:
+                    h_global = th.matmul(nodes_prob_tr, self.mlp_global(graph.ndata['feat']))
+                else:
+                    h_global = th.matmul(nodes_prob_tr, nodes_emb)
+
+
                 #h_global = th.matmul(th.transpose(nodes_prob*nodes_dst, 0, 1), nodes_emb)
 
                 #h_global = self.activation(h_global)
@@ -742,7 +847,7 @@ class BPN(nn.Module):
                     h_etp = self.mlp_probinfo(-th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1))
                     h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
                     h_global = th.cat((h_global, h_pi,h_etp), dim=1)
-                elif self.global_info_choice == 12:
+                elif self.global_info_choice in [12]:
                     h_etp = self.mlp_probinfo(-th.sum(nodes_prob_tr*th.log(nodes_prob_tr+1e-10),dim=1).unsqueeze(1))
                     h_global = th.cat((h_global,h_etp), dim=1)
                 elif self.global_info_choice == 13:
@@ -812,6 +917,11 @@ class BPN(nn.Module):
                     h_etp = self.mlp_probinfo(
                         -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
                     h_global =  h_etp
+                elif self.global_info_choice in [24,25]:
+                    h_etp = self.mlp_probinfo(
+                        -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
+                    h_global = th.cat((h_global, h_etp), dim=1)
+
 
                 if self.global_cat_choice == 0:
                     h = th.cat((rst,h_global),dim=1)
@@ -930,7 +1040,9 @@ class BPN(nn.Module):
 
 
                 if self.flag_transformer == 1:
-                    h_pathW = self.path_embedding(graph,graph_info)
+                    #h_pathW = self.path_embedding(graph, graph_info)
+                    h_pathW = self.path_embedding2(graph,graph_info)
+
                     # print('f',th.sum(h_pathW),th.sum(h))
                     # exit()
                     h = th.cat((h,h_pathW),dim=1)
@@ -939,6 +1051,9 @@ class BPN(nn.Module):
                 elif self.flag_transformer == 3:
                     h_pathW = self.path_embedding(graph, graph_info)
                     h = th.cat((h,h_pathW+h_path),dim=1)
+                elif self.flag_transformer == 4:
+                    h_pathW = self.path_embedding(graph, graph_info)
+                    h = th.cat((h,h_pathW,h_path),dim=1)
 
 
 

@@ -305,6 +305,8 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
         for j, po in enumerate(new_POs):
             sampled_graphs.ndata['hp'][po][j] = 1
             sampled_graphs.ndata['hd'][po][j] = 0
+        #sampled_graphs.ndata['is_critical'] = sampled_graphs.ndata['hp']
+
 
     #POs_label_all = POs_label_all[graphs_info['batched_POs_mask']]
     #graphs_info['label'] = POs_label_all
@@ -346,6 +348,8 @@ def get_batched_data(graphs,po_batch_size=2048):
     graphs_info['topo'] = [l.to(device) for l in topo_levels]
     topo_r = gen_topo(sampled_graphs, flag_reverse=True)
     graphs_info['topo_r'] = [l.to(device) for l in topo_r]
+    level = gen_level(sampled_graphs)
+    graphs_info['level'] = [l.to(device) for l in level]
     graphs_info['POs_batches'] = POs_batches
     
     return sampled_graphs,graphs_info
@@ -359,6 +363,7 @@ def init_criticality_matrix(graph,POs):
     for k, po in enumerate(POs.detach().cpu().numpy().tolist()):
         graph.ndata['hp'][po][k] = 1
         graph.ndata['hd'][po][k] = 0
+    graph.ndata['is_critical'] = graph.ndata['hp'].bool()
 
     return graph
 
@@ -799,7 +804,7 @@ if __name__ == "__main__":
         options.global_out_choice = input_options.global_out_choice
         options.flag_group = input_options.flag_group
         #options.flag_transformer = input_options.flag_transformer
-
+        #options.base_pe = input_options.base_pe
         options = merge_with_loaded(input_options,options)
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '-' not in f and '_' not in f]
