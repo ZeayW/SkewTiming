@@ -10,8 +10,8 @@ import concurrent.futures as cf
 
 from transformer import PathTransformer
 from pathgformer import *
-#from pathformer import *
-from pathformer2 import *
+from pathformer import *
+#from pathformer2 import *
 # from transformer import *
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
@@ -91,6 +91,7 @@ class BPN(nn.Module):
                  flag_gt = False,
                  flag_transformer = False,
                  flag_rawpath = False,
+                 flag_singlepath = False,
                  flag_delay=False,
                  flag_degree=False,
                  flag_width=False,
@@ -106,6 +107,7 @@ class BPN(nn.Module):
         self.flag_gt = flag_gt
         self.flag_transformer = flag_transformer
         self.flag_rawpath = flag_rawpath
+        self.flag_singlepath = flag_singlepath
         self.flag_delay = flag_delay
         self.flag_degree = flag_degree
         self.flag_width = flag_width
@@ -115,6 +117,8 @@ class BPN(nn.Module):
         self.hidden_dim = hidden_dim
         self.agg_choice = agg_choice
         self.attn_choice = attn_choice
+        self.use_corr_pe = use_corr_pe
+        self.use_corr_bias = use_attn_bias
         self.mlp_pi = MLP(4, int(hidden_dim / 2), hidden_dim)
         #self.linear_pi = th.nn.Linear(4, hidden_dim)
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
@@ -126,8 +130,10 @@ class BPN(nn.Module):
             d_in += 1
         #tf_dim = int(hidden_dim / 2)
         if self.flag_transformer in [1,3,4]:
-            self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
-            #self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,                                   use_cls_token=True)
+            if self.use_corr_bias or self.use_corr_pe:
+                self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
+            else:
+                self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,                                   use_cls_token=True)
 
         if self.flag_transformer in [2,3,4]:
             self.pathformer2 = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_cls_token=True)
@@ -573,10 +579,10 @@ class BPN(nn.Module):
         path_lengths = th.zeros(len(graph_info['POs']),dtype=th.float,device=graph.device)
         is_ended = th.zeros(len(graph_info['POs']),dtype=th.bool,device=graph.device)
 
-
-        c_local = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)  # fill per-path valid region only
-        c_sink = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)
-        c_sink[:,0] = 1
+        if self.use_corr_bias or self.use_corr_pe:
+            c_local = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)  # fill per-path valid region only
+            c_sink = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)
+            c_sink[:,0] = 1
 
         with th.no_grad():
             with graph.local_scope():
@@ -602,14 +608,16 @@ class BPN(nn.Module):
                     graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
 
                     critical_mask = th.transpose(graph.ndata['is_critical'][nodes],0,1)
-                    print(th.sum(critical_mask,dim=1))
-                    idx = critical_mask.int().argmax(dim=1)  # (n_rows,)
-                    # Build one-hot, then cast to bool
-                    critical_mask = F.one_hot(idx, num_classes=critical_mask.size(1)).bool()  # (n_rows, n_cols) [web:101]
-                    # Optional: zero out rows that had no True originally
-                    has_true = critical_mask.any(dim=1, keepdim=True)  # (n_rows, 1) [web:100][web:103]
-                    critical_mask = critical_mask & has_true
-                    print(th.sum(critical_mask, dim=1))
+
+                    if self.flag_singlepath:
+                        idx = critical_mask.int().argmax(dim=1)  # (n_rows,)
+                        # Build one-hot, then cast to bool
+                        critical_mask = F.one_hot(idx, num_classes=critical_mask.size(1)).bool()  # (n_rows, n_cols) [web:101]
+                        # Optional: zero out rows that had no True originally
+                        has_true = critical_mask.any(dim=1, keepdim=True)  # (n_rows, 1) [web:100][web:103]
+                        critical_mask = critical_mask & has_true
+                        graph.ndata['is_critical'][nodes] = th.transpose(critical_mask,0,1)
+
 
 
                     if th.sum(critical_mask)==0:
@@ -625,11 +633,12 @@ class BPN(nn.Module):
                     path_feat_l = path_feat_l.reshape(path_feat_l.shape[0],1,path_feat_l.shape[1])
                     path_feat = th.cat((path_feat,path_feat_l),dim=1)
 
-                    nodes_prob_l = graph.ndata['hp'][nodes]
-                    nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-                    cs = th.sum(nodes_prob_l_tr*critical_mask,dim=1) / num_critical.clamp(min=1)
-                    c_sink[:,l+1] = cs
-                    # c_local[:,l+1] =
+                    if self.use_corr_pe or self.use_corr_bias:
+                        nodes_prob_l = graph.ndata['hp'][nodes]
+                        nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
+                        cs = th.sum(nodes_prob_l_tr*critical_mask,dim=1) / th.sum(critical_mask,dim=1).clamp(min=1)
+                        c_sink[:,l+1] = cs
+                        # c_local[:,l+1] =
 
                     filtered_mask = th.sum(graph.ndata['is_critical'][nodes],dim=1)>=1
                     #pre_nodes = nodes
@@ -637,12 +646,14 @@ class BPN(nn.Module):
                     _,nodes = graph.out_edges(pre_nodes,etype='reverse')
                     nodes = th.unique(nodes)
                     l += 1
-        exit()
-        #path_emb = self.pathformer(path_feat,path_lengths)
 
-        c_sink = c_sink[:, :l + 1]
-        c_local = c_local[:, :l + 1]
-        path_emb = self.pathformer(path_feat, path_lengths,c_sink=c_sink,c_local=c_local)
+        #path_emb = self.pathformer(path_feat,path_lengths)
+        if self.use_corr_pe or self.use_corr_bias:
+            c_sink = c_sink[:, :l + 1]
+            c_local = c_local[:, :l + 1]
+            path_emb = self.pathformer(path_feat, path_lengths,c_sink=c_sink,c_local=c_local)
+        else:
+            path_emb = self.pathformer(path_feat, path_lengths)
 
         return path_emb
            # return graph.ndata['hp'], graph.ndata['hd']
