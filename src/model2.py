@@ -602,9 +602,17 @@ class BPN(nn.Module):
                     graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
 
                     critical_mask = th.transpose(graph.ndata['is_critical'][nodes],0,1)
+                    print(th.sum(critical_mask,dim=1))
+                    idx = critical_mask.int().argmax(dim=1)  # (n_rows,)
+                    # Build one-hot, then cast to bool
+                    critical_mask = F.one_hot(idx, num_classes=critical_mask.size(1)).bool()  # (n_rows, n_cols) [web:101]
+                    # Optional: zero out rows that had no True originally
+                    has_true = critical_mask.any(dim=1, keepdim=True)  # (n_rows, 1) [web:100][web:103]
+                    critical_mask = critical_mask & has_true
+                    print(th.sum(critical_mask, dim=1))
 
 
-                    if th.sum(critical_mask)==0:
+                if th.sum(critical_mask)==0:
                         break
                     is_ended_mask = th.logical_and(th.sum(critical_mask,dim=1) == 0, ~is_ended)
                     is_ended[is_ended_mask] = True
@@ -629,7 +637,7 @@ class BPN(nn.Module):
                     _,nodes = graph.out_edges(pre_nodes,etype='reverse')
                     nodes = th.unique(nodes)
                     l += 1
-
+        exit()
         #path_emb = self.pathformer(path_feat,path_lengths)
 
         c_sink = c_sink[:, :l + 1]
