@@ -609,6 +609,9 @@ class BPN(nn.Module):
 
                     critical_mask = th.transpose(graph.ndata['is_critical'][nodes],0,1)
 
+                    if th.sum(critical_mask) == 0:
+                        break
+
                     if self.flag_singlepath:
                         idx = critical_mask.int().argmax(dim=1)  # (n_rows,)
                         # Build one-hot, then cast to bool
@@ -617,11 +620,7 @@ class BPN(nn.Module):
                         has_true = critical_mask.any(dim=1, keepdim=True)  # (n_rows, 1) [web:100][web:103]
                         critical_mask = critical_mask & has_true
                         graph.ndata['is_critical'][nodes] = th.transpose(critical_mask,0,1)
-
-
-
-                    if th.sum(critical_mask)==0:
-                        break
+                    
                     is_ended_mask = th.logical_and(th.sum(critical_mask,dim=1) == 0, ~is_ended)
                     is_ended[is_ended_mask] = True
                     path_lengths[is_ended_mask] = l + 2
