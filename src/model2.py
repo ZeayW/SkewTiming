@@ -603,6 +603,7 @@ class BPN(nn.Module):
 
                     critical_mask = th.transpose(graph.ndata['is_critical'][nodes],0,1)
 
+
                     if th.sum(critical_mask)==0:
                         break
                     is_ended_mask = th.logical_and(th.sum(critical_mask,dim=1) == 0, ~is_ended)
@@ -618,7 +619,7 @@ class BPN(nn.Module):
 
                     nodes_prob_l = graph.ndata['hp'][nodes]
                     nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-                    cs = nodes_prob_l_tr*critical_mask / num_critical.clamp(min=1)
+                    cs = th.sum(nodes_prob_l_tr*critical_mask,dim=1) / num_critical.clamp(min=1)
                     c_sink[:,l+1] = cs
                     # c_local[:,l+1] =
 
