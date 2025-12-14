@@ -73,6 +73,7 @@ def gen_level(graph):
     levels = []
     nodes_list = th.tensor(range(graph.number_of_nodes()),device=graph.device)
     POs_nid = nodes_list[graph.ndata['is_po'] == 1]
+
     levels.append(POs_nid)
     cur_nodes = POs_nid
     #pre_nid = po_id.item()
@@ -85,8 +86,17 @@ def gen_level(graph):
         if len(cur_nodes)==0:
             break
         levels.append(cur_nodes)
-    #exit()
+
     return levels
+    # #exit()
+    # new_levels = []
+    # for nodes in levels:
+    #     isModule_mask = graph.ndata['is_module'][nodes] == 1
+    #     isGate_mask = graph.ndata['is_module'][nodes] == 0
+    #     nodes_gate = nodes[isGate_mask]
+    #     nodes_module = nodes[isModule_mask]
+    #     new_levels.append([nodes_gate,nodes_module,nodes])
+    # return new_levels
 
 def add_newEtype(graph,new_etype,new_edges,new_edge_feats):
     graph = graph.to(th.device('cpu'))
@@ -142,6 +152,9 @@ def add_reverse_edges(graph):
         edges_m = graph.edges(etype='intra_module')
         reverse_edges = (th.cat((edges_g[1],edges_m[1])), th.cat((edges_g[0],edges_m[0])))
         new_graph = add_newEtype(graph,'reverse',reverse_edges,{})
+
+        # forward_edges = (reverse_edges[1], reverse_edges[0])
+        # new_graph = add_newEtype(new_graph, 'forward', forward_edges, {})
 
     else:
         new_graph = dgl.heterograph(

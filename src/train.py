@@ -348,12 +348,12 @@ def get_batched_data(graphs,po_batch_size=2048):
     graphs_info['topo'] = [l.to(device) for l in topo_levels]
     topo_r = gen_topo(sampled_graphs, flag_reverse=True)
     graphs_info['topo_r'] = [l.to(device) for l in topo_r]
-    level = gen_level(sampled_graphs)
-    graphs_info['level'] = [l.to(device) for l in level]
+    # level = gen_level(sampled_graphs)
+    # graphs_info['level'] = [l.to(device) for l in level]
+    #graphs_info['level'] = [[l[0].to(device),l[1].to(device),l[2].to(device)] for l in level]
     graphs_info['POs_batches'] = POs_batches
     
     return sampled_graphs,graphs_info
-
 
 def init_criticality_matrix(graph,POs):
 

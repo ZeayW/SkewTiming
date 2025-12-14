@@ -126,9 +126,8 @@ class BPN(nn.Module):
             d_in += 1
         #tf_dim = int(hidden_dim / 2)
         if self.flag_transformer in [1,3,4]:
-            #self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
-            self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,
-                                               use_cls_token=True)
+            self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_corr_pe=use_corr_pe,use_attn_bias=use_attn_bias)
+            #self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,                                   use_cls_token=True)
 
         if self.flag_transformer in [2,3,4]:
             self.pathformer2 = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,use_cls_token=True)
@@ -530,6 +529,7 @@ class BPN(nn.Module):
                 ep_feat_sum_l = th.matmul(nodes_prob_l_tr, nodes_feat_l)  # N_ep * d_f
                 ep_feat_sum_l = ep_feat_sum_l.reshape(ep_feat_sum_l.shape[0], 1, ep_feat_sum_l.shape[1])
                 ep_path_feat = th.cat((ep_path_feat, ep_feat_sum_l), dim=1)
+                #ep_path_feat = th.cat((ep_feat_sum_l,ep_path_feat), dim=1)
 
             #print(ep_path_feat.shape,ep_path_lengths.shape,th.max(ep_path_lengths))
             ep_path_emb = self.pathformer2(ep_path_feat,ep_path_lengths)
@@ -572,45 +572,77 @@ class BPN(nn.Module):
         path_lengths = th.zeros(len(graph_info['POs']),dtype=th.float,device=graph.device)
         is_ended = th.zeros(len(graph_info['POs']),dtype=th.bool,device=graph.device)
 
-        level = graph_info['level']
+        #level = graph_info['level']
         #level = graph_info['topo_r']
         #graph.ndata['is_critical'] = th.zeros()
-        pre_nodes = level[0]
+        #pre_nodes = level[0]
+        PO2node_prob = graph_info['PO2node_prob']
+        c_local = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)  # fill per-path valid region only
+        c_sink = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)
+        c_sink[:,0] = 1
 
-        with graph.local_scope():
-            graph.ndata['hp'] = graph_info['nodes_prob']
-            for l, nodes in enumerate(level[1:]):
-                isModule_mask = graph.ndata['is_module'][pre_nodes] == 1
-                isGate_mask = graph.ndata['is_module'][pre_nodes] == 0
-                pre_nodes_gate = pre_nodes[isGate_mask]
-                pre_nodes_module = pre_nodes[isModule_mask]
-                if len(pre_nodes_gate) !=0:
-                    graph.pull(pre_nodes_gate,fn.copy_u('hp','p'),self.reduce_func_maxprob, etype='intra_gate')
-                if len(pre_nodes_module) !=0:
-                    graph.pull(pre_nodes_module,fn.copy_u('hp','p'),self.reduce_func_maxprob, etype='intra_module')
-                #print('aaa')
-                graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
-                critical_mask = th.transpose(graph.ndata['is_critical'][nodes],0,1)
+        with th.no_grad():
+            with graph.local_scope():
+                graph.ndata['hp'] = graph_info['nodes_prob']
+                pre_nodes = graph_info['POs']
+                _, nodes = graph.out_edges(pre_nodes, etype='reverse')
+                nodes = th.unique(nodes)
+                l = 0
 
-                is_ended_mask = th.logical_and(th.sum(critical_mask,dim=1) == 0, ~is_ended)
-                is_ended[is_ended_mask] = True
-                path_lengths[is_ended_mask] = l + 2
-                if th.sum(critical_mask)==0:
-                    break
-                nodes_prob_l = graph.ndata['hp'][nodes]
-                nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-                nodes_prob_l_tr = nodes_prob_l_tr * critical_mask
-                nodes_feat_l = feat_p[nodes]
+                while True:
+                #for l, nodes in enumerate(graph_info['level'][1:]):
+                    pre_isModule_mask = graph.ndata['is_module'][pre_nodes] == 1
+                    pre_isGate_mask = graph.ndata['is_module'][pre_nodes] == 0
+                    pre_nodes_gate = pre_nodes[pre_isGate_mask]
+                    pre_nodes_module = pre_nodes[pre_isModule_mask]
+                    if len(pre_nodes_gate) !=0:
+                        graph.pull(pre_nodes_gate,fn.copy_u('hp','p'),self.reduce_func_maxprob, etype='intra_gate')
+                    if len(pre_nodes_module) !=0:
+                        graph.pull(pre_nodes_module,fn.copy_u('hp','p'),self.reduce_func_maxprob, etype='intra_module')
+                    #print('aaa')
+                    # if len(pre_nodes) !=0:
+                    #     graph.pull(pre_nodes, fn.copy_u('hp', 'p'), self.reduce_func_maxprob, etype='forward')
+                    graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
 
-                path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
-                num_critical = th.sum(critical_mask,dim=1,keepdim=True)
-                path_feat_l = path_feat_l / num_critical.clamp(min=1)
-                path_feat_l = path_feat_l.reshape(path_feat_l.shape[0],1,path_feat_l.shape[1])
-                path_feat = th.cat((path_feat,path_feat_l),dim=1)
+                    critical_mask = th.transpose(graph.ndata['is_critical'][nodes],0,1)
+                    #print(th.sum(critical_mask,dim=1))
+                    #nodes_prob_l = graph.ndata['hp'][nodes]
+                    #nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
+                    #print(th.sum(nodes_prob_l_tr*critical_mask,dim=1))
+                    if th.sum(critical_mask)==0:
+                        break
+                    is_ended_mask = th.logical_and(th.sum(critical_mask,dim=1) == 0, ~is_ended)
+                    is_ended[is_ended_mask] = True
+                    path_lengths[is_ended_mask] = l + 2
 
-                pre_nodes = nodes
+                    nodes_feat_l = feat_p[nodes]
+                    path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
+                    num_critical = th.sum(critical_mask,dim=1,keepdim=True)
+                    path_feat_l = path_feat_l / num_critical.clamp(min=1)
+                    path_feat_l = path_feat_l.reshape(path_feat_l.shape[0],1,path_feat_l.shape[1])
+                    path_feat = th.cat((path_feat,path_feat_l),dim=1)
 
-        path_emb = self.pathformer(path_feat,path_lengths)
+                    nodes_prob_l = graph.ndata['hp'][nodes]
+                    nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
+                    cs = th.mean(nodes_prob_l_tr*critical_mask,dim=1)
+                    # cl =
+                    c_sink[:,l+1] = cs
+                    # c_local[:,l+1] =
+
+
+
+
+                    filtered_mask = th.sum(graph.ndata['is_critical'][nodes],dim=1)>=1
+
+                    #pre_nodes = nodes
+                    pre_nodes = nodes[filtered_mask]
+                    _,nodes = graph.out_edges(pre_nodes,etype='reverse')
+                    nodes = th.unique(nodes)
+                    l += 1
+        #exit()
+
+        #path_emb = self.pathformer(path_feat,path_lengths)
+        path_emb = self.pathformer(path_feat, path_lengths,c_sink=c_sink)
 
         return path_emb
            # return graph.ndata['hp'], graph.ndata['hd']
