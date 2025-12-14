@@ -416,7 +416,8 @@ class BPN(nn.Module):
     def reduce_func_maxprob_r(self,nodes):
 
         is_critical = th.any(nodes.mailbox['is_critical'],dim=1)
-
+        # corr_local = nodes.mailbox['is_critical']*nodes.mailbox['w']
+        #
         #print(mask.shape,mask)
         return {'is_critical':is_critical}
 
@@ -572,15 +573,11 @@ class BPN(nn.Module):
         path_lengths = th.zeros(len(graph_info['POs']),dtype=th.float,device=graph.device)
         is_ended = th.zeros(len(graph_info['POs']),dtype=th.bool,device=graph.device)
 
-        #level = graph_info['level']
-        #level = graph_info['topo_r']
-        #graph.ndata['is_critical'] = th.zeros()
-        #pre_nodes = level[0]
-        PO2node_prob = graph_info['PO2node_prob']
+
         c_local = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)  # fill per-path valid region only
         c_sink = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)
         c_sink[:,0] = 1
-        #print(c_sink.shape)
+
         with th.no_grad():
             with graph.local_scope():
                 graph.ndata['hp'] = graph_info['nodes_prob']
@@ -605,10 +602,7 @@ class BPN(nn.Module):
                     graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
 
                     critical_mask = th.transpose(graph.ndata['is_critical'][nodes],0,1)
-                    #print(th.sum(critical_mask,dim=1))
-                    #nodes_prob_l = graph.ndata['hp'][nodes]
-                    #nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-                    #print(th.sum(nodes_prob_l_tr*critical_mask,dim=1))
+
                     if th.sum(critical_mask)==0:
                         break
                     is_ended_mask = th.logical_and(th.sum(critical_mask,dim=1) == 0, ~is_ended)
@@ -624,7 +618,7 @@ class BPN(nn.Module):
 
                     nodes_prob_l = graph.ndata['hp'][nodes]
                     nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-                    cs = th.mean(nodes_prob_l_tr*critical_mask,dim=1)
+                    cs = nodes_prob_l_tr*critical_mask / num_critical.clamp(min=1)
                     c_sink[:,l+1] = cs
                     # c_local[:,l+1] =
 
@@ -634,11 +628,11 @@ class BPN(nn.Module):
                     _,nodes = graph.out_edges(pre_nodes,etype='reverse')
                     nodes = th.unique(nodes)
                     l += 1
-        #exit()
-        c_sink = c_sink[:,:l+1]
-        c_local = c_local[:,:l+1]
-        #print(l,path_feat.shape,c_sink.shape)
+
         #path_emb = self.pathformer(path_feat,path_lengths)
+
+        c_sink = c_sink[:, :l + 1]
+        c_local = c_local[:, :l + 1]
         path_emb = self.pathformer(path_feat, path_lengths,c_sink=c_sink,c_local=c_local)
 
         return path_emb
@@ -1078,10 +1072,10 @@ class BPN(nn.Module):
                 elif self.flag_transformer == 2:
                     h = th.cat((h,h_path),dim=1)
                 elif self.flag_transformer == 3:
-                    h_pathW = self.path_embedding(graph, graph_info)
+                    h_pathW = self.path_embedding2(graph, graph_info)
                     h = th.cat((h,h_pathW+h_path),dim=1)
                 elif self.flag_transformer == 4:
-                    h_pathW = self.path_embedding(graph, graph_info)
+                    h_pathW = self.path_embedding2(graph, graph_info)
                     h = th.cat((h,h_pathW,h_path),dim=1)
 
 
