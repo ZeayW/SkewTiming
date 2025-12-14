@@ -612,7 +612,7 @@ class BPN(nn.Module):
                     print(th.sum(critical_mask, dim=1))
 
 
-                if th.sum(critical_mask)==0:
+                    if th.sum(critical_mask)==0:
                         break
                     is_ended_mask = th.logical_and(th.sum(critical_mask,dim=1) == 0, ~is_ended)
                     is_ended[is_ended_mask] = True
