@@ -208,6 +208,7 @@ def init_model(options):
                 flag_transformer=options.flag_transformer,
                 flag_gt = options.flag_gt,
                 flag_rawpath = options.flag_rawpath,
+                flag_singlepath=options.flag_singlepath,
                 flag_delay=options.flag_delay,
                 flag_degree=options.flag_degree,
                 flag_width=options.flag_width,
