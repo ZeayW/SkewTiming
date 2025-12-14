@@ -580,7 +580,7 @@ class BPN(nn.Module):
         c_local = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)  # fill per-path valid region only
         c_sink = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)
         c_sink[:,0] = 1
-
+        #print(c_sink.shape)
         with th.no_grad():
             with graph.local_scope():
                 graph.ndata['hp'] = graph_info['nodes_prob']
@@ -640,9 +640,11 @@ class BPN(nn.Module):
                     nodes = th.unique(nodes)
                     l += 1
         #exit()
-
+        c_sink = c_sink[:,:l+1]
+        c_local = c_local[:,:l+1]
+        #print(l,path_feat.shape,c_sink.shape)
         #path_emb = self.pathformer(path_feat,path_lengths)
-        path_emb = self.pathformer(path_feat, path_lengths,c_sink=c_sink)
+        path_emb = self.pathformer(path_feat, path_lengths,c_sink=c_sink,c_local=c_local)
 
         return path_emb
            # return graph.ndata['hp'], graph.ndata['hd']
