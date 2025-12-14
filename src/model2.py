@@ -10,8 +10,8 @@ import concurrent.futures as cf
 
 from transformer import PathTransformer
 from pathgformer import *
-from pathformer import *
-#from pathformer2 import *
+#from pathformer import *
+from pathformer2 import *
 # from transformer import *
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
@@ -625,15 +625,10 @@ class BPN(nn.Module):
                     nodes_prob_l = graph.ndata['hp'][nodes]
                     nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
                     cs = th.mean(nodes_prob_l_tr*critical_mask,dim=1)
-                    # cl =
                     c_sink[:,l+1] = cs
                     # c_local[:,l+1] =
 
-
-
-
                     filtered_mask = th.sum(graph.ndata['is_critical'][nodes],dim=1)>=1
-
                     #pre_nodes = nodes
                     pre_nodes = nodes[filtered_mask]
                     _,nodes = graph.out_edges(pre_nodes,etype='reverse')
