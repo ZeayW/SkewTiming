@@ -10,8 +10,8 @@ import concurrent.futures as cf
 
 from transformer import PathTransformer
 from pathgformer import *
-from pathformer import *
-#from pathformer2 import *
+#from pathformer import *
+from pathformer2 import *
 # from transformer import *
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
