@@ -119,7 +119,7 @@ def load_data(usage,options):
             if graph_info['design_name'] in ['s15850','s5378','tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
-
+        #print(graph_info['design_name'],len(graph_info['delay-label_pairs'][0][1]))
 
         if options.flag_homo:
             graph = heter2homo(graph)
@@ -548,6 +548,7 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
 
             flag_r = flag_reverse or options.flag_path_supervise
 
+
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
             graphs_info['nodes_name'] = data['nodes_name']
 
@@ -702,7 +703,8 @@ def train(model):
             num_POs, totoal_path_loss,total_prob = 0,0,0
             total_labels,total_labels_hat = None,None
 
-            sampled_graphs, graphs_info = get_batched_data(graphs)
+            po_bs = 1792
+            sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
             for POs, POs_mask in graphs_info['POs_batches']:
                 POs_mask = th.tensor(POs_mask).to(device)
                 graphs_info['POs'] = POs

@@ -7,11 +7,11 @@ from dgl import function as fn
 from utils import *
 from options import get_options
 import concurrent.futures as cf
-
+import math
 from transformer import PathTransformer
 from pathgformer import *
-#from pathformer import *
-from pathformer2 import *
+from pathformer import *
+# from pathformer2 import *
 # from transformer import *
 options = get_options()
 #device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
@@ -411,21 +411,29 @@ class BPN(nn.Module):
         #print('ee', max_prob.shape, len(nodes))
         return {'max_prob':max_prob}
 
-    def message_func_maxprob_r(self,edges):
+    def edge_msg_critical(self,edges):
+        is_critical = th.logical_and(edges.src['is_critical'], edges.src['max_prob'] == edges.dst['hp'])
+        is_critical = th.logical_and(is_critical, edges.dst['hp'] != 0)
+        return {'is_critical': is_critical}
 
-        is_critical = th.logical_and(edges.src['is_critical'],edges.src['max_prob'] == edges.dst['hp'])
-        is_critical =  th.logical_and(is_critical, edges.dst['hp']!=0)
+
+    def message_func_maxprob_r(self, edges):
+        is_critical = th.logical_and(edges.src['is_critical'], edges.src['max_prob'] == edges.dst['hp'])
+        is_critical = th.logical_and(is_critical, edges.dst['hp'] != 0)
+        w = is_critical*edges.data['weight']
 
         # exit()
-        return {'is_critical':is_critical}
+        return {'is_critical': is_critical,'w':w}
+
 
     def reduce_func_maxprob_r(self,nodes):
 
         is_critical = th.any(nodes.mailbox['is_critical'],dim=1)
-        # corr_local = nodes.mailbox['is_critical']*nodes.mailbox['w']
+
+        corr_local = th.sum(nodes.mailbox['w'],dim=1)
         #
         #print(mask.shape,mask)
-        return {'is_critical':is_critical}
+        return {'is_critical':is_critical,'cl':corr_local}
 
     def message_func_delay(self,edges):
         return {'md': edges.src['delay'],'w':edges.data['weight']}
@@ -605,6 +613,8 @@ class BPN(nn.Module):
                     #print('aaa')
                     # if len(pre_nodes) !=0:
                     #     graph.pull(pre_nodes, fn.copy_u('hp', 'p'), self.reduce_func_maxprob, etype='forward')
+                    eids = graph.in_edges(nodes,etype='reverse',form='eid')
+                    #graph.apply_edges(self.edge_msg_critical,eids,etype='reverse')
                     graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
 
                     critical_mask = th.transpose(graph.ndata['is_critical'][nodes],0,1)
@@ -623,7 +633,7 @@ class BPN(nn.Module):
                     
                     is_ended_mask = th.logical_and(th.sum(critical_mask,dim=1) == 0, ~is_ended)
                     is_ended[is_ended_mask] = True
-                    path_lengths[is_ended_mask] = l + 2
+                    path_lengths[is_ended_mask] = l + 1
 
                     nodes_feat_l = feat_p[nodes]
                     path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
@@ -636,8 +646,14 @@ class BPN(nn.Module):
                         nodes_prob_l = graph.ndata['hp'][nodes]
                         nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
                         cs = th.sum(nodes_prob_l_tr*critical_mask,dim=1) / th.sum(critical_mask,dim=1).clamp(min=1)
+                        #cs = cs*math.log(l+2,2)
                         c_sink[:,l+1] = cs
+                        cl = th.matmul(critical_mask.float(),graph.ndata['cl'][nodes]) / th.sum(critical_mask,dim=1).clamp(min=1)
+                        cl = cl.diagonal()
+                        c_local[:,l+1] = cl
+
                         # c_local[:,l+1] =
+
 
                     filtered_mask = th.sum(graph.ndata['is_critical'][nodes],dim=1)>=1
                     #pre_nodes = nodes
