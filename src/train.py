@@ -250,12 +250,12 @@ def init(seed):
 
 def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
 
-    POs_label_all, PIs_delay_all,POs_criticalprob_all = None, None,None
+    POs_label_all, PIs_delay_all = None, None
     start_idx = 0
     new_edges = ([], [])
     new_edges_weight = None
     for data in sampled_data:
-        PIs_delay, POs_label, POs_baselabel, pi2po_edges = data['delay-label_pairs'][idx][:4]
+        PIs_delay, POs_label, _, pi2po_edges = data['delay-label_pairs'][idx][:4]
 
         POs_label_all = cat_tensor(POs_label_all, th.tensor(POs_label, dtype=th.float).unsqueeze(-1).to(device))
         PIs_delay_all = cat_tensor(PIs_delay_all, th.tensor(PIs_delay, dtype=th.float).unsqueeze(-1).to(device))
@@ -275,10 +275,6 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
                     new_edges_weight = th.cat((new_edges_weight,pi_weights),dim=0)
                 #new_edges_weight.extend(pi2po_edges[2])
 
-        if len(data['delay-label_pairs'][idx]) == 5:
-            POs_criticalprob = data['delay-label_pairs'][idx][4]
-            POs_criticalprob_all = cat_tensor(POs_criticalprob_all, th.tensor(POs_criticalprob, dtype=th.float).to(device))
-
         start_idx += graph.number_of_nodes()
 
     if flag_addedge:
@@ -289,33 +285,10 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
                                  data=new_edges_feat,etype='pi2po')
 
 
-    if POs_criticalprob_all is not None:
-        prob_mask = POs_criticalprob_all.squeeze(1) <= 0.5
-        prob_mask = th.logical_and(POs_criticalprob_all.squeeze(1) >=0.1,POs_criticalprob_all.squeeze(1) < 0.5)
-        POs_label_all = POs_label_all[prob_mask]
-        new_POs = graphs_info['POs_origin'][prob_mask]
-        graphs_info['POs'] = new_POs
-        sampled_graphs.ndata['is_po'] = th.zeros((sampled_graphs.number_of_nodes(), 1)).to(device)
-        sampled_graphs.ndata['is_po'][new_POs] = 1
-        graphs_info['POs_mask'] = (sampled_graphs.ndata['is_po'] == 1).squeeze(-1).to(device)
-        #POs_label = POs_label[prob_mask]
-        sampled_graphs.ndata['hd'] = -1000 * th.ones((sampled_graphs.number_of_nodes(), len(new_POs)),
-                                                     dtype=th.float).to(device)
-        sampled_graphs.ndata['hp'] = th.zeros((sampled_graphs.number_of_nodes(), len(new_POs)),
-                                              dtype=th.float).to(device)
-        for j, po in enumerate(new_POs):
-            sampled_graphs.ndata['hp'][po][j] = 1
-            sampled_graphs.ndata['hd'][po][j] = 0
-        #sampled_graphs.ndata['is_critical'] = sampled_graphs.ndata['hp']
-
-
-    #POs_label_all = POs_label_all[graphs_info['batched_POs_mask']]
-    #graphs_info['label'] = POs_label_all
-
     sampled_graphs.ndata['delay'] = th.zeros((sampled_graphs.number_of_nodes(), 1), dtype=th.float).to(device)
     sampled_graphs.ndata['delay'][sampled_graphs.ndata['is_pi'] == 1] = PIs_delay_all
-    sampled_graphs.ndata['input_delay'] = th.zeros((sampled_graphs.number_of_nodes(), 1), dtype=th.float).to(device)
-    sampled_graphs.ndata['input_delay'][sampled_graphs.ndata['is_pi'] == 1] = PIs_delay_all
+    # sampled_graphs.ndata['input_delay'] = th.zeros((sampled_graphs.number_of_nodes(), 1), dtype=th.float).to(device)
+    # sampled_graphs.ndata['input_delay'][sampled_graphs.ndata['is_pi'] == 1] = PIs_delay_all
 
     return POs_label_all, PIs_delay_all, sampled_graphs,graphs_info
 
@@ -358,12 +331,9 @@ def get_batched_data(graphs,po_batch_size=2048):
 
 def init_criticality_matrix(graph,POs):
 
-    graph.ndata['hd'] = -1000 * th.ones((graph.number_of_nodes(), len(POs)), dtype=th.float).to(
-        device)
     graph.ndata['hp'] = th.zeros((graph.number_of_nodes(), len(POs)), dtype=th.float).to(device)
     for k, po in enumerate(POs.detach().cpu().numpy().tolist()):
         graph.ndata['hp'][po][k] = 1
-        graph.ndata['hd'][po][k] = 0
     graph.ndata['is_critical'] = graph.ndata['hp'].bool()
 
     return graph
@@ -418,7 +388,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                 graphs_info['nodes_name'] = data['nodes_name']
                 #print(data['design_name'])
                 for j in range(num_cases):
-                    torch.cuda.empty_cache()
+                    #torch.cuda.empty_cache()
                     flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
                     POs_label, PIs_delay, sampled_graphs, graphs_info = gather_data(sampled_data, sampled_graphs,
                                                                                     graphs_info, j, flag_addedge)
@@ -529,6 +499,7 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
     #batch_size = options.batch_size if flag_reverse else len(test_data)
     test_idx_loader = get_idx_loader(test_data, batch_size,False)
     model.flag_train = False
+    model.eval()
     # print(len(test_data))
     # print(test_data[0])
     with (th.no_grad()):
@@ -566,7 +537,7 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                 for j in range(num_cases):
                     # if j!=0: continue
 
-                    torch.cuda.empty_cache()
+                    #torch.cuda.empty_cache()
                     flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
                     POs_label, PIs_delay, sampled_graphs,graphs_info = gather_data(sampled_data,sampled_graphs,graphs_info,j,flag_addedge)
 
@@ -599,9 +570,8 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
         r2_list  = []
         mape_list = []
         for i, (name, data) in enumerate(test_data.items()):
-            torch.cuda.empty_cache()
-            # print(len(test_data))
-            # continue
+            #torch.cuda.empty_cache()
+
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
             else:
@@ -671,7 +641,7 @@ def train(model):
 
         flag_path = options.flag_path_supervise
         flag_reverse = options.flag_reverse
-        Loss = nn.L1Loss()
+        #Loss = nn.L1Loss()
         if options.flag_alternate:
             if epoch%3!=0:
                 flag_path = False
@@ -685,7 +655,7 @@ def train(model):
         total_num,total_loss, total_r2 = 0,0.0,0
 
         for batch, idxs in enumerate(train_idx_loader):
-            torch.cuda.empty_cache()
+            #torch.cuda.empty_cache()
             sampled_data = []
 
             idxs = idxs.numpy().tolist()
@@ -703,8 +673,10 @@ def train(model):
             num_POs, totoal_path_loss,total_prob = 0,0,0
             total_labels,total_labels_hat = None,None
 
-            po_bs = 1792
+            po_bs = 1024
+            #po_bs = 896
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
+            print(len(graphs_info['POs_batches'][0][0]),sampled_graphs.number_of_nodes())
             for POs, POs_mask in graphs_info['POs_batches']:
                 POs_mask = th.tensor(POs_mask).to(device)
                 graphs_info['POs'] = POs
@@ -714,7 +686,7 @@ def train(model):
                     sampled_graphs = init_criticality_matrix(sampled_graphs, POs)
 
                 for i in range(num_cases):
-                    torch.cuda.empty_cache()
+                    #torch.cuda.empty_cache()
                     flag_addedge = flag_path or options.global_cat_choice in [3,4,5]
                     POs_label, PIs_delay, sampled_graphs, graphs_info = gather_data(sampled_data, sampled_graphs,
                                                                                     graphs_info, i, flag_addedge)
@@ -736,8 +708,9 @@ def train(model):
 
                         #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(th.exp(1 - path_loss))
 
-                        train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(prob_ce)
-
+                        #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(prob_ce)
+                        #train_loss = th.mean(th.pow(labels_hat - POs_label,2)) + th.mean(prob_ce)
+                        train_loss += th.mean(prob_ce)
                         #train_loss = th.mean((th.exp(1 - path_loss)) * th.pow(labels_hat - POs_label,2))
 
 
@@ -760,7 +733,7 @@ def train(model):
                     optim.zero_grad()
                     train_loss.backward()
                     optim.step()
-                    torch.cuda.empty_cache()
+                    #torch.cuda.empty_cache()
 
                     if flag_addedge:
                         sampled_graphs.remove_edges(sampled_graphs.edges('all',etype='pi2po')[2],etype='pi2po')
@@ -771,7 +744,7 @@ def train(model):
         val_r2,val_mape = test_all(val_data,model,options.batch_size,po_bs=po_bs,usage='val',flag_reverse=flag_reverse or flag_path)
         test_r2, test_mape = test_all(test_data,model,options.batch_size,po_bs=po_bs,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
 
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
         if options.checkpoint:
             save_path = '../checkpoints/{}'.format(options.checkpoint)
             th.save(model.state_dict(), os.path.join(save_path,"{}.pth".format(epoch)))

@@ -47,7 +47,9 @@ def get_options(args=None):
     parser.add_argument("--checkpoint",type=str,help= "checkpoint to save the results and logs")
     parser.add_argument("--test_iter", type=str, default=None,help="iter to test the model")
     parser.add_argument("--learning_rate", type=float, help = 'the learning rate for training. Type: float.',default=1e-3)
-    parser.add_argument("--batch_size", type=int, help = 'the number of samples in each training batch. Type: int',default=64)
+    parser.add_argument("--batch_size", type=int, help = 'the number of graphs in each training batch. Type: int',default=64)
+    # parser.add_argument("--batch_size_po", type=int, help='the maximum number of PO in each batch. Type: int',
+    #                     default=64)
     parser.add_argument("--num_epoch", type=int, help='Type: int; number of epoches that the training procedure runs. Type: int',default=2000)
     parser.add_argument("--in_dim", type=int, help='the dimension of the input feature. Type: int',default=9)
     parser.add_argument("--out_dim", type=int, help='the dimension of the output embedding. Type: int', default=128)
