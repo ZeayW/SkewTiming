@@ -673,11 +673,13 @@ def train(model):
             num_POs, totoal_path_loss,total_prob = 0,0,0
             total_labels,total_labels_hat = None,None
 
-            po_bs = 1024
+            po_bs = 1200
             #po_bs = 896
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
             print(len(graphs_info['POs_batches'][0][0]),sampled_graphs.number_of_nodes())
+
             for POs, POs_mask in graphs_info['POs_batches']:
+                if len(POs) < 200: continue
                 POs_mask = th.tensor(POs_mask).to(device)
                 graphs_info['POs'] = POs
                 graphs_info['POs_origin'] = POs
@@ -690,6 +692,7 @@ def train(model):
                     flag_addedge = flag_path or options.global_cat_choice in [3,4,5]
                     POs_label, PIs_delay, sampled_graphs, graphs_info = gather_data(sampled_data, sampled_graphs,
                                                                                     graphs_info, i, flag_addedge)
+
                     POs_label = POs_label[POs_mask]
                     labels_hat,prob_sum,prob_dev,prob_ce,_ = model(sampled_graphs, graphs_info)
                     total_num += len(POs_label)
