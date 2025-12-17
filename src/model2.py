@@ -10,8 +10,8 @@ import concurrent.futures as cf
 import math
 from pathgformer import *
 
-# from transformer import PathTransformer
-from transformer2 import PathTransformer
+from transformer import PathTransformer
+#from transformer2 import PathTransformer
 
 # from pathformer import *
 #from pathformer2 import *
@@ -703,6 +703,7 @@ class BPN(nn.Module):
                 is_ended_mask = th.logical_and(th.sum(critical_mask, dim=1) == 0, ~is_ended)
                 is_ended[is_ended_mask] = True
                 path_lengths[is_ended_mask] = l + 1
+
 
                 nodes_feat_l = feat_p[nodes]
                 path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
