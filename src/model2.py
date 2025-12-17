@@ -8,10 +8,14 @@ from utils import *
 from options import get_options
 import concurrent.futures as cf
 import math
-from transformer import PathTransformer
 from pathgformer import *
+
+# from transformer import PathTransformer
+from transformer2 import PathTransformer
+
 # from pathformer import *
-from pathformer2 import *
+#from pathformer2 import *
+from pathformer4 import *
 
 # from transformer import *
 options = get_options()
@@ -19,6 +23,54 @@ options = get_options()
 
 # device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
 # from transformers import BertTokenizer, MobileBertForSequenceClassification, MobileBertConfig
+
+class VanillaDirGNN(nn.Module):
+    def __init__(self, in_dim, hidden_dim, num_layers=2):
+        super(VanillaDirGNN, self).__init__()
+        self.num_layers = num_layers
+        self.mlp_in = MLP(in_dim, hidden_dim, hidden_dim)
+        # combine self, forward, reverse messages
+        self.mlp_update = MLP(3 * hidden_dim, hidden_dim, hidden_dim)
+        self.activation = nn.LeakyReLU(negative_slope=0.1)
+
+    def _msg(self, edges):
+        return {'mg': edges.src['feat_gnn']}
+
+    def _reduce_mean_f(self, nodes):
+        if 'mg' not in nodes.mailbox:
+            # no incoming edges of this type
+            return {'neigh_f': th.zeros_like(nodes.data['feat_gnn'])}
+        m = nodes.mailbox['mg'].mean(dim=1)
+        return {'neigh_f': m}
+
+    def _reduce_mean_r(self, nodes):
+        if 'mg' not in nodes.mailbox:
+            # no incoming edges of this type
+            return {'neigh_r': th.zeros_like(nodes.data['feat_gnn'])}
+        m = nodes.mailbox['mg'].mean(dim=1)
+        return {'neigh_r': m}
+    def forward(self, graph,feat):
+
+        h = self.mlp_in(feat)
+        graph.ndata['feat_gnn'] = h
+
+        for _ in range(self.num_layers):
+            # messages from forward edges
+            graph.update_all(self._msg, self._reduce_mean_f, etype='forward')
+            h_fwd = graph.ndata['neigh_f']
+
+            # messages from reverse edges
+            graph.update_all(self._msg, self._reduce_mean_r, etype='reverse')
+            h_rev = graph.ndata['neigh_r']
+
+            # fuse self, forward, reverse
+            h_cat = th.cat((graph.ndata['feat_gnn'], h_fwd, h_rev), dim=1)
+            h_new = self.activation(self.mlp_update(h_cat))
+            graph.ndata['feat_gnn'] = h_new
+
+        return graph.ndata['feat_gnn']
+
+
 
 def row_softmax_on_nonzero(x: torch.Tensor) -> torch.Tensor:
     """
@@ -91,6 +143,7 @@ class BPN(nn.Module):
                  global_info_choice=0,
                  agg_choice=0,
                  attn_choice=1,
+                 path_feat_choice=0,
                  base_pe='learned',
                  use_corr_pe=False,
                  use_attn_bias=False,
@@ -113,6 +166,7 @@ class BPN(nn.Module):
         self.flag_gt = flag_gt
         self.flag_transformer = flag_transformer
         self.flag_rawpath = flag_rawpath
+        self.path_feat_choice = path_feat_choice
         self.flag_singlepath = flag_singlepath
         self.flag_delay = flag_delay
         self.flag_degree = flag_degree
@@ -130,8 +184,8 @@ class BPN(nn.Module):
         self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
 
         tf_dim = hidden_dim
-        d_in = infeat_dim1 + infeat_dim2 if flag_rawpath else hidden_dim
-        if flag_degree and flag_rawpath:
+        d_in = infeat_dim1 + infeat_dim2 if path_feat_choice == 0 else hidden_dim
+        if flag_degree and path_feat_choice == 0:
             d_in += 1
         # tf_dim = int(hidden_dim / 2)
         if self.flag_transformer in [1, 3, 4]:
@@ -139,15 +193,18 @@ class BPN(nn.Module):
                 self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,
                                                    use_corr_pe=use_corr_pe, use_attn_bias=use_attn_bias)
             else:
-                self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,
-                                                  use_cls_token=True)
+                self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe)
 
         if self.flag_transformer in [2, 3, 4]:
             self.pathformer2 = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,
                                                use_cls_token=True)
 
+        if self.path_feat_choice in [2]:
+            self.gnn_pathfeat = VanillaDirGNN(in_dim=infeat_dim1 + infeat_dim2,hidden_dim=tf_dim)
+        elif self.path_feat_choice in [3]:
+            self.gnn_pathfeat = VanillaDirGNN(in_dim=hidden_dim,hidden_dim=tf_dim)
+
         if self.flag_gt:
-            d_in = infeat_dim1 + infeat_dim2 if flag_rawpath else hidden_dim
             self.pathgformer = PathGraphFormer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=2, d_ff=128,
                                                use_corr_pe=use_corr_pe, use_corr_bias=use_attn_bias)
 
@@ -418,19 +475,21 @@ class BPN(nn.Module):
     def message_func_maxprob_r(self, edges):
         is_critical = th.logical_and(edges.src['is_critical'], edges.src['max_prob'] == edges.dst['hp'])
         is_critical = th.logical_and(is_critical, edges.dst['hp'] != 0)
-        w = is_critical * edges.data['weight']
 
-        # exit()
-        return {'is_critical': is_critical, 'w': w}
+        if self.use_corr_pe or self.use_corr_bias:
+            w = is_critical * edges.data['weight']
+            return {'is_critical': is_critical, 'w': w}
+        else:
+            return {'is_critical': is_critical}
 
     def reduce_func_maxprob_r(self, nodes):
 
         is_critical = th.any(nodes.mailbox['is_critical'], dim=1)
-
-        corr_local = th.sum(nodes.mailbox['w'], dim=1)
-        #
-        # print(mask.shape,mask)
-        return {'is_critical': is_critical, 'cl': corr_local}
+        if self.use_corr_pe or self.use_corr_bias:
+            corr_local = th.sum(nodes.mailbox['w'], dim=1)
+            return {'is_critical': is_critical, 'cl': corr_local}
+        else:
+            return {'is_critical': is_critical}
 
     def message_func_delay(self, edges):
         return {'md': edges.src['delay'], 'w': edges.data['weight']}
@@ -515,14 +574,23 @@ class BPN(nn.Module):
     def prop_backward_new(self, graph, graph_info):
         topo_r = graph_info['topo_r']
 
-        feat_name = 'feat' if self.flag_rawpath else 'h'
+        if self.path_feat_choice == 0:
+            feat_p = graph.ndata['feat']
+            if self.flag_delay:
+                feat_p = th.cat((feat_p, graph.ndata['degree']), dim=1)
+        elif self.path_feat_choice == 1:
+            feat_p = graph.ndata['h']
+        elif self.path_feat_choice == 2:
+            feat_p = self.gnn_pathfeat(graph,graph.ndata['feat'])
+        elif self.path_feat_choice == 3:
+            feat_p = self.gnn_pathfeat(graph,graph.ndata['h'])
+        else:
+            print('wrong path feat choice')
+            exit()
+
         ep_path_lengths = graph.ndata['level'][graph_info['POs']] + 1
         ep_path_lengths = ep_path_lengths.squeeze(1)
-        feat_p = graph.ndata[feat_name]
-        if self.flag_rawpath and self.flag_degree:
-            feat_p = th.cat((feat_p, graph.ndata['degree']), dim=1)
         ep_path_feat = feat_p[graph_info['POs']]
-
         ep_path_feat = ep_path_feat.reshape(ep_path_feat.shape[0], 1, ep_path_feat.shape[1])  # N_ep * d_f
 
         for l, nodes in enumerate(topo_r[1:]):
@@ -569,10 +637,20 @@ class BPN(nn.Module):
         return critical_paths
 
     def path_embedding2(self, graph, graph_info):
-        feat_name = 'feat' if self.flag_rawpath else 'h'
-        feat_p = graph.ndata[feat_name]
-        if self.flag_rawpath and self.flag_degree:
-            feat_p = th.cat((feat_p, graph.ndata['degree']), dim=1)
+
+        if self.path_feat_choice == 0:
+            feat_p = graph.ndata['feat']
+            if self.flag_delay:
+                feat_p = th.cat((feat_p, graph.ndata['degree']), dim=1)
+        elif self.path_feat_choice == 1:
+            feat_p = graph.ndata['h']
+        elif self.path_feat_choice == 2:
+            feat_p = self.gnn_pathfeat(graph,graph.ndata['feat'])
+        elif self.path_feat_choice == 3:
+            feat_p = self.gnn_pathfeat(graph,graph.ndata['h'])
+        else:
+            print('wrong path feat choice')
+            exit()
         path_feat = feat_p[graph_info['POs']]
         path_feat = path_feat.reshape(path_feat.shape[0], 1, path_feat.shape[1])
         path_lengths = th.zeros(len(graph_info['POs']), dtype=th.float, device=graph.device)
@@ -593,17 +671,17 @@ class BPN(nn.Module):
 
             while True:
                 # for l, nodes in enumerate(graph_info['level'][1:]):
-                pre_isModule_mask = graph.ndata['is_module'][pre_nodes] == 1
-                pre_isGate_mask = graph.ndata['is_module'][pre_nodes] == 0
-                pre_nodes_gate = pre_nodes[pre_isGate_mask]
-                pre_nodes_module = pre_nodes[pre_isModule_mask]
-                if len(pre_nodes_gate) != 0:
-                    graph.pull(pre_nodes_gate, fn.copy_u('hp', 'p'), self.reduce_func_maxprob, etype='intra_gate')
-                if len(pre_nodes_module) != 0:
-                    graph.pull(pre_nodes_module, fn.copy_u('hp', 'p'), self.reduce_func_maxprob,
-                               etype='intra_module')
-                # if len(pre_nodes) !=0:
-                #     graph.pull(pre_nodes, fn.copy_u('hp', 'p'), self.reduce_func_maxprob, etype='forward')
+                # pre_isModule_mask = graph.ndata['is_module'][pre_nodes] == 1
+                # pre_isGate_mask = graph.ndata['is_module'][pre_nodes] == 0
+                # pre_nodes_gate = pre_nodes[pre_isGate_mask]
+                # pre_nodes_module = pre_nodes[pre_isModule_mask]
+                # if len(pre_nodes_gate) != 0:
+                #     graph.pull(pre_nodes_gate, fn.copy_u('hp', 'p'), self.reduce_func_maxprob, etype='intra_gate')
+                # if len(pre_nodes_module) != 0:
+                #     graph.pull(pre_nodes_module, fn.copy_u('hp', 'p'), self.reduce_func_maxprob,
+                #                etype='intra_module')
+                if len(pre_nodes) !=0:
+                    graph.pull(pre_nodes, fn.copy_u('hp', 'p'), self.reduce_func_maxprob, etype='forward')
 
                 graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
 
@@ -645,7 +723,7 @@ class BPN(nn.Module):
                     c_local[:, l + 1] = cl
 
                 filtered_mask = th.sum(graph.ndata['is_critical'][nodes], dim=1) >= 1
-                # pre_nodes = nodes
+                #pre_nodes = nodes
                 pre_nodes = nodes[filtered_mask]
                 _, nodes = graph.out_edges(pre_nodes, etype='reverse')
                 nodes = th.unique(nodes)
@@ -657,6 +735,11 @@ class BPN(nn.Module):
             c_sink = c_sink[:, :l + 1]
             c_local = c_local[:, :l + 1]
             path_emb = self.pathformer(path_feat, path_lengths, c_sink=c_sink, c_local=c_local)
+            # e2 = self.pathformer(path_feat, path_lengths, c_sink=c_sink)
+            # e3 = self.pathformer(path_feat, path_lengths)
+            # print(e2-path_emb,th.sum(e2-path_emb))
+            # print(e2 - e3, th.sum(e2 - e3))
+            #exit()
         else:
             path_emb = self.pathformer(path_feat, path_lengths)
 

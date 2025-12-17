@@ -101,7 +101,7 @@ def load_data(usage,options):
         if usage == 'train':
             case_range = (0,20)
         else:
-            case_range = (0, 40)
+            case_range = (0, 20)
 
     print("------------Loading {}_data #{} {}-------------".format(usage,len(data),case_range))
 
@@ -117,6 +117,8 @@ def load_data(usage,options):
             if len( graph_info['delay-label_pairs'][0][1]) <= 150:
                 continue
             if graph_info['design_name'] in ['s15850','s5378','tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+
+            if graph_info['design_name'] in ['aes128','ecg']: continue
 
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
         #print(graph_info['design_name'],len(graph_info['delay-label_pairs'][0][1]))
@@ -202,6 +204,7 @@ def init_model(options):
                 device=device,
                 global_cat_choice=options.global_cat_choice,
                 global_info_choice= options.global_info_choice,
+                path_feat_choice=options.path_feat_choice,
                 base_pe=base_pe,
                 use_attn_bias=options.use_attn_bias,
                 use_corr_pe=options.use_corr_pe,
@@ -616,7 +619,10 @@ def train(model):
     th.multiprocessing.set_sharing_strategy('file_system')
 
     train_data = load_data('train',options)
-    val_data = load_data('val',options)
+    val_data = load_data('test',options)
+
+    options.data_savepath = '../datasets/cases_round7_v5/heter_removepiPO_new_full/'
+    options.flag_group = True
     test_data = load_data('test',options)
     print("Data successfully loaded")
 
@@ -635,7 +641,6 @@ def train(model):
     cur_time = datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
     num_traindata = len(train_data)
     for epoch in range(options.num_epoch):
-
 
         model.flag_train = True
 
@@ -745,7 +750,9 @@ def train(model):
         print('End of epoch {}'.format(epoch))
         po_bs = 2048
         val_r2,val_mape = test_all(val_data,model,options.batch_size,po_bs=po_bs,usage='val',flag_reverse=flag_reverse or flag_path)
-        test_r2, test_mape = test_all(test_data,model,options.batch_size,po_bs=po_bs,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
+        #test_r2, test_mape = test_all(test_data,model,options.batch_size,po_bs=po_bs,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
+        test_r2, test_mape = test_all(test_data, model, 1, po_bs=po_bs, usage='test',
+                                      flag_reverse=flag_reverse or flag_path, flag_group=True)
 
         #torch.cuda.empty_cache()
         if options.checkpoint:

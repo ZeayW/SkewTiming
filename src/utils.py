@@ -153,8 +153,8 @@ def add_reverse_edges(graph):
         reverse_edges = (th.cat((edges_g[1],edges_m[1])), th.cat((edges_g[0],edges_m[0])))
         new_graph = add_newEtype(graph,'reverse',reverse_edges,{})
 
-        # forward_edges = (reverse_edges[1], reverse_edges[0])
-        # new_graph = add_newEtype(new_graph, 'forward', forward_edges, {})
+        forward_edges = (reverse_edges[1], reverse_edges[0])
+        new_graph = add_newEtype(new_graph, 'forward', forward_edges, {})
 
     else:
         new_graph = dgl.heterograph(
