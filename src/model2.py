@@ -718,7 +718,7 @@ class BPN(nn.Module):
                     nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
 
                     if self.path_corr_choice in [1,3]:
-                        row_max = x.max(dim=1, keepdim=True).values
+                        row_max = nodes_prob_l_tr.max(dim=1, keepdim=True).values
                         nodes_prob_l_tr = nodes_prob_l_tr / row_max
 
                     cs = th.sum(nodes_prob_l_tr * critical_mask, dim=1) / th.sum(critical_mask, dim=1).clamp(min=1)
