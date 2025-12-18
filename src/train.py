@@ -205,6 +205,7 @@ def init_model(options):
                 global_cat_choice=options.global_cat_choice,
                 global_info_choice= options.global_info_choice,
                 path_feat_choice=options.path_feat_choice,
+                path_corr_choice = options.path_corr_choice,
                 base_pe=base_pe,
                 use_attn_bias=options.use_attn_bias,
                 use_corr_pe=options.use_corr_pe,
@@ -551,6 +552,8 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
 
 
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
+                    labels_hat[labels_hat > 30] = 30
+                    labels_hat[labels_hat < 0] = 0
                     labels = cat_tensor(labels,POs_label)
 
                     if flag_addedge:
@@ -666,7 +669,7 @@ def train(model):
             idxs = idxs.numpy().tolist()
             num_cases = 1000
             graphs = []
-            num_nodes = 0
+            num_nodes,num_pos = 0,0
             for idx in idxs:
                 data = train_data[idx]
                 num_cases = min(num_cases,len(data['delay-label_pairs']))
@@ -674,14 +677,16 @@ def train(model):
                 sampled_data.append(train_data[idx])
                 graphs.append(data['graph'])
                 num_nodes += data['graph'].number_of_nodes()
+                num_pos += len(train_data[idx]['delay-label_pairs'][0][1])
 
             flag_r = flag_reverse or flag_path
             num_POs, totoal_path_loss,total_prob = 0,0,0
             total_labels,total_labels_hat = None,None
 
+
             po_bs = 1200
             if num_nodes>150000:
-                pos_bs = 650
+                po_bs = int(num_pos/2)
             #po_bs = 896
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
             print(len(graphs_info['POs_batches'][0][0]),sampled_graphs.number_of_nodes())

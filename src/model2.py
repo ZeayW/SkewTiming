@@ -144,6 +144,7 @@ class BPN(nn.Module):
                  agg_choice=0,
                  attn_choice=1,
                  path_feat_choice=0,
+                 path_corr_choice=0,
                  base_pe='learned',
                  use_corr_pe=False,
                  use_attn_bias=False,
@@ -167,6 +168,7 @@ class BPN(nn.Module):
         self.flag_transformer = flag_transformer
         self.flag_rawpath = flag_rawpath
         self.path_feat_choice = path_feat_choice
+        self.path_corr_choice = path_corr_choice
         self.flag_singlepath = flag_singlepath
         self.flag_delay = flag_delay
         self.flag_degree = flag_degree
@@ -704,7 +706,6 @@ class BPN(nn.Module):
                 is_ended[is_ended_mask] = True
                 path_lengths[is_ended_mask] = l + 1
 
-
                 nodes_feat_l = feat_p[nodes]
                 path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
                 num_critical = th.sum(critical_mask, dim=1, keepdim=True)
@@ -715,8 +716,16 @@ class BPN(nn.Module):
                 if self.use_corr_pe or self.use_corr_bias:
                     nodes_prob_l = graph.ndata['hp'][nodes]
                     nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
+
+                    if self.path_corr_choice in [1,3]:
+                        row_max = x.max(dim=1, keepdim=True).values
+                        nodes_prob_l_tr = nodes_prob_l_tr / row_max
+
                     cs = th.sum(nodes_prob_l_tr * critical_mask, dim=1) / th.sum(critical_mask, dim=1).clamp(min=1)
-                    # cs = cs*math.log(l+2,2)
+
+                    if self.path_corr_choice in [2,3]:
+                        cs = cs*(0.5+math.log(l+1,2))
+
                     c_sink[:, l + 1] = cs
                     cl = th.matmul(critical_mask.float(), graph.ndata['cl'][nodes]) / th.sum(critical_mask,
                                                                                       dim=1).clamp(min=1)

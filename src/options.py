@@ -23,6 +23,7 @@ def get_options(args=None):
     parser.add_argument('--flag_transformer', type=int,default=1,help='valid value in [1,2,3]')
     parser.add_argument('--flag_rawpath', action='store_true')
     parser.add_argument('--path_feat_choice', type=int,default=0,help='valid value in {0:use raw,1:use forward embedding, 2:use another gnn}')
+    parser.add_argument('--path_corr_choice', type=int, default=0)
     parser.add_argument('--flag_singlepath', action='store_true')
     parser.add_argument('--flag_degree', action='store_true')
     parser.add_argument('--flag_width', action='store_true')
