@@ -25,7 +25,7 @@ options = get_options()
 # from transformers import BertTokenizer, MobileBertForSequenceClassification, MobileBertConfig
 
 class VanillaDirGNN(nn.Module):
-    def __init__(self, in_dim, hidden_dim, num_layers=2):
+    def __init__(self, in_dim, hidden_dim, num_layers=3):
         super(VanillaDirGNN, self).__init__()
         self.num_layers = num_layers
         self.mlp_in = MLP(in_dim, hidden_dim, hidden_dim)
