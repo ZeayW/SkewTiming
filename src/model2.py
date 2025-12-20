@@ -781,6 +781,7 @@ class BPN(nn.Module):
             path_emb = self.pathformer(path_feat, path_lengths, c_sink=c_sink, c_local=c_local)
             # e2 = self.pathformer(path_feat, path_lengths)
             # e3 = self.pathformer(path_feat, path_lengths,c_local=c_local)
+            # print(path_emb)
             # print(e2-path_emb,th.sum(e2-path_emb))
             # print(e2 - e3, th.sum(e2 - e3))
             # exit()

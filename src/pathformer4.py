@@ -228,8 +228,8 @@ class PathTransformerW(nn.Module):
         else:
             self.base_pe = SinusoidalPositionalEncoding(d_model)
 
-        self.neigh_bias = NeighborCorrBias(alpha=0.7)
-        self.sink_bias = SinkNodeAttentionBias(beta=1.0, floor=0.1, gamma=0.7)
+        self.neigh_bias = NeighborCorrBias(alpha=5.0)
+        self.sink_bias = SinkNodeAttentionBias(beta=5.0, floor=0.1, gamma=0.7)
 
         self.layers = nn.ModuleList()
         for _ in range(n_layers):
