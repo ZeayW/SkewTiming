@@ -248,7 +248,7 @@ class PathTransformerW(nn.Module):
 
         self.norm_out = nn.LayerNorm(d_model)
 
-    def forward(self, x, lengths, c_local: torch.Tensor | None, c_sink: torch.Tensor | None):
+    def forward(self, x, lengths, c_local: torch.Tensor | None = None, c_sink: torch.Tensor | None = None):
         """
         x: [B,L,d_in], lengths: [B]
         c_local: [B,L] (c_local[:,0]=0), c_sink: [B,L]

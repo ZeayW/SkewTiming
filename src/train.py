@@ -118,7 +118,7 @@ def load_data(usage,options):
                 continue
             if graph_info['design_name'] in ['s15850','s5378','tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
-            if graph_info['design_name'] in ['aes128','ecg']: continue
+            if not options.test_iter and graph_info['design_name'] in ['aes128','ecg']: continue
 
         name2nid = {graph_info['nodes_name'][i]:i for i in range(len(graph_info['nodes_name']))}
         #print(graph_info['design_name'],len(graph_info['delay-label_pairs'][0][1]))
@@ -204,6 +204,7 @@ def init_model(options):
                 device=device,
                 global_cat_choice=options.global_cat_choice,
                 global_info_choice= options.global_info_choice,
+                use_pathgnn = options.use_pathgnn,
                 path_feat_choice=options.path_feat_choice,
                 path_corr_choice = options.path_corr_choice,
                 base_pe=base_pe,
@@ -685,7 +686,7 @@ def train(model):
 
 
             po_bs = 1200
-            if num_nodes>150000:
+            if num_nodes>180000 or (num_nodes>145000 and num_pos>800):
                 po_bs = int(num_pos/2)
             #po_bs = 896
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
@@ -785,21 +786,25 @@ if __name__ == "__main__":
             format(options.test_iter, options.checkpoint)
         input_options = options
         options = th.load('../checkpoints/{}/options.pkl'.format(options.checkpoint))
+
+        # options = merge_with_loaded(input_options, options)
+        # options.use_pathgnn = True
+        # options.path_feat_choice = 0
+        # options.flag_rawpath = True
+        # th.save(options,'../checkpoints/{}/options.pkl'.format(options.checkpoint))
+        # exit()
+
         options.data_savepath = input_options.data_savepath
-        options.checkpoint = input_options.checkpoint
         options.test_iter = input_options.test_iter
         options.quick = input_options.quick
         options.batch_size = input_options.batch_size
         options.gpu = input_options.gpu
         options.flag_path_supervise = input_options.flag_path_supervise
-
-        options.remove01 = input_options.remove01
-        options.flag_baseline = input_options.flag_baseline
-        options.global_out_choice = input_options.global_out_choice
         options.flag_group = input_options.flag_group
-        #options.flag_transformer = input_options.flag_transformer
-        #options.base_pe = input_options.base_pe
+
         options = merge_with_loaded(input_options,options)
+
+
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '-' not in f and '_' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
