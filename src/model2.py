@@ -23,7 +23,6 @@ options = get_options()
 
 # device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
 # from transformers import BertTokenizer, MobileBertForSequenceClassification, MobileBertConfig
-
 class VanillaDirGNN(nn.Module):
     def __init__(self, in_dim, hidden_dim, num_layers=3):
         super(VanillaDirGNN, self).__init__()
@@ -601,6 +600,20 @@ class BPN(nn.Module):
         ep_path_lengths = graph.ndata['level'][graph_info['POs']] + 1
         ep_path_lengths = ep_path_lengths.squeeze(1)
         ep_path_feat = feat_p[graph_info['POs']]
+        if self.path_feat_choice == 1:
+            distance =  th.zeros((ep_path_feat.shape[0], 1), dtype=th.float, device=graph.device)
+            feat_raw = self.proj_pathfeat(distance)
+            ep_path_feat = th.cat((ep_path_feat, feat_raw), dim=1)
+        elif self.path_feat_choice == 2:
+            corr = th.ones((ep_path_feat.shape[0], 1), dtype=th.float, device=graph.device)
+            feat_raw = self.proj_pathfeat(corr)
+            ep_path_feat = th.cat((ep_path_feat, feat_raw), dim=1)
+        elif self.path_feat_choice == 3:
+            distance =  th.zeros((ep_path_feat.shape[0], 1), dtype=th.float, device=graph.device)
+            corr = th.ones((ep_path_feat.shape[0], 1), dtype=th.float, device=graph.device)
+            feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
+            ep_path_feat = th.cat((ep_path_feat, feat_raw), dim=1)
+
         ep_path_feat = ep_path_feat.reshape(ep_path_feat.shape[0], 1, ep_path_feat.shape[1])  # N_ep * d_f
 
         for l, nodes in enumerate(topo_r[1:]):
@@ -612,8 +625,22 @@ class BPN(nn.Module):
 
             nodes_feat_l = feat_p[nodes]
             ep_feat_sum_l = th.matmul(nodes_prob_l_tr, nodes_feat_l)  # N_ep * d_f
-            ep_feat_sum_l = ep_feat_sum_l.reshape(ep_feat_sum_l.shape[0], 1, ep_feat_sum_l.shape[1])
-            ep_path_feat = th.cat((ep_path_feat, ep_feat_sum_l), dim=1)
+            ep_feat_l = ep_feat_sum_l.reshape(ep_feat_sum_l.shape[0], 1, ep_feat_sum_l.shape[1])
+            if self.path_feat_choice == 1:
+                distance = th.zeros((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
+                feat_raw = self.proj_pathfeat(distance)
+                ep_feat_l = th.cat((ep_feat_l, feat_raw), dim=1)
+            elif self.path_feat_choice == 2:
+                corr = th.ones((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
+                feat_raw = self.proj_pathfeat(corr)
+                ep_feat_l = th.cat((ep_feat_l, feat_raw), dim=1)
+            elif self.path_feat_choice == 3:
+                distance = th.zeros((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
+                corr = th.ones((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
+                feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
+                ep_feat_l = th.cat((ep_feat_l, feat_raw), dim=1)
+
+            ep_path_feat = th.cat((ep_path_feat, ep_feat_l), dim=1)
             # ep_path_feat = th.cat((ep_feat_sum_l,ep_path_feat), dim=1)
 
         # print(ep_path_feat.shape,ep_path_lengths.shape,th.max(ep_path_lengths))
