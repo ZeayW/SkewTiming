@@ -626,7 +626,7 @@ class BPN(nn.Module):
 
             nodes_feat_l = feat_p[nodes]
             ep_feat_sum_l = th.matmul(nodes_prob_l_tr, nodes_feat_l)  # N_ep * d_f
-            ep_feat_l = ep_feat_sum_l.reshape(ep_feat_sum_l.shape[0], 1, ep_feat_sum_l.shape[1])
+
             if self.path_feat_choice == 1:
                 distance = th.zeros((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
                 feat_raw = self.proj_pathfeat(distance)
@@ -640,7 +640,7 @@ class BPN(nn.Module):
                 corr = th.ones((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
                 feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
                 ep_feat_l = th.cat((ep_feat_l, feat_raw), dim=1)
-
+            ep_feat_l = ep_feat_sum_l.reshape(ep_feat_sum_l.shape[0], 1, ep_feat_sum_l.shape[1])
             ep_path_feat = th.cat((ep_path_feat, ep_feat_l), dim=1)
             # ep_path_feat = th.cat((ep_feat_sum_l,ep_path_feat), dim=1)
 
