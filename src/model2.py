@@ -597,24 +597,25 @@ class BPN(nn.Module):
         if self.use_pathgnn:
             feat_p = self.gnn_pathfeat(graph,feat_p)
 
+        path_feat = feat_p[graph_info['POs']]
+        if self.path_feat_choice == 1:
+            distance = th.zeros((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
+            feat_raw = self.proj_pathfeat(distance)
+            path_feat = th.cat((path_feat, feat_raw), dim=1)
+        elif self.path_feat_choice == 2:
+            corr = th.ones((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
+            feat_raw = self.proj_pathfeat(corr)
+            path_feat = th.cat((path_feat, feat_raw), dim=1)
+        elif self.path_feat_choice == 3:
+            distance = th.zeros((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
+            corr = th.ones((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
+            feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
+            path_feat = th.cat((path_feat, feat_raw), dim=1)
+
+        ep_path_feat = path_feat.reshape(path_feat.shape[0], 1, path_feat.shape[1])
+
         ep_path_lengths = graph.ndata['level'][graph_info['POs']] + 1
         ep_path_lengths = ep_path_lengths.squeeze(1)
-        ep_path_feat = feat_p[graph_info['POs']]
-        if self.path_feat_choice == 1:
-            distance =  th.zeros((ep_path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            feat_raw = self.proj_pathfeat(distance)
-            ep_path_feat = th.cat((ep_path_feat, feat_raw), dim=1)
-        elif self.path_feat_choice == 2:
-            corr = th.ones((ep_path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            feat_raw = self.proj_pathfeat(corr)
-            ep_path_feat = th.cat((ep_path_feat, feat_raw), dim=1)
-        elif self.path_feat_choice == 3:
-            distance =  th.zeros((ep_path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            corr = th.ones((ep_path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
-            ep_path_feat = th.cat((ep_path_feat, feat_raw), dim=1)
-
-        ep_path_feat = ep_path_feat.reshape(ep_path_feat.shape[0], 1, ep_path_feat.shape[1])  # N_ep * d_f
 
         for l, nodes in enumerate(topo_r[1:]):
             graph.pull(nodes, self.message_func_reverse, self.reduce_fun_reverse, etype='reverse')
