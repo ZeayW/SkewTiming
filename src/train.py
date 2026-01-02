@@ -204,6 +204,8 @@ def init_model(options):
                 device=device,
                 global_cat_choice=options.global_cat_choice,
                 global_info_choice= options.global_info_choice,
+                alpha = options.alpha,
+                beta = options.beta,
                 use_pathgnn = options.use_pathgnn,
                 path_feat_choice=options.path_feat_choice,
                 path_corr_choice = options.path_corr_choice,

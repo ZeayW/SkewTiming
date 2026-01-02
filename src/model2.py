@@ -142,6 +142,8 @@ class BPN(nn.Module):
                  global_info_choice=0,
                  agg_choice=0,
                  attn_choice=1,
+                 alpha=10,
+                 beta=10,
                  use_pathgnn=True,
                  path_feat_choice=0,
                  path_corr_choice=0,
@@ -193,7 +195,7 @@ class BPN(nn.Module):
 
         if self.flag_transformer in [1, 3, 4]:
             if self.use_corr_bias or self.use_corr_pe:
-                self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,
+                self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, alpha=alpha,beta=beta,base_pe=base_pe,
                                                    use_corr_pe=use_corr_pe, use_attn_bias=use_attn_bias)
             else:
                 self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe)
