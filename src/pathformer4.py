@@ -221,6 +221,7 @@ class PathTransformerW(nn.Module):
 
         self.input_proj = nn.Linear(d_in, d_model) if d_in != d_model else nn.Identity()
         self.use_corr_pe = use_corr_pe
+        self.use_corr_bias = use_attn_bias
 
         if use_corr_pe:
             self.corr_pe = CorrPositionalEncodingStrong(
@@ -230,8 +231,9 @@ class PathTransformerW(nn.Module):
         else:
             self.base_pe = SinusoidalPositionalEncoding(d_model)
 
-        self.neigh_bias = NeighborCorrBias(alpha=alpha)
-        self.sink_bias = SinkNodeAttentionBias(beta=beta, floor=0.1, gamma=0.7)
+        if self.use_corr_bias:
+            self.neigh_bias = NeighborCorrBias(alpha=alpha)
+            self.sink_bias = SinkNodeAttentionBias(beta=beta, floor=0.1, gamma=0.7)
 
         self.layers = nn.ModuleList()
         for _ in range(n_layers):
@@ -274,12 +276,15 @@ class PathTransformerW(nn.Module):
             h = self.base_pe(h)
 
         for layer in self.layers:
-            # neighbor bias (all nodes)
-            bias_nn = self.neigh_bias(c_local=c_local, mask=mask, H=self.n_heads)  # [B,H,L,L]
-            # sink-only bias (row 0)
-            bias_sink = self.sink_bias(c_sink=c_sink, mask=mask, H=self.n_heads)   # [B,H,L,L]
-            # total bias: neighbor + sink row
-            attn_bias = bias_nn + bias_sink
+            if self.use_corr_bias:
+                # neighbor bias (all nodes)
+                bias_nn = self.neigh_bias(c_local=c_local, mask=mask, H=self.n_heads)  # [B,H,L,L]
+                # sink-only bias (row 0)
+                bias_sink = self.sink_bias(c_sink=c_sink, mask=mask, H=self.n_heads)   # [B,H,L,L]
+                # total bias: neighbor + sink row
+                attn_bias = bias_nn + bias_sink
+            else:
+                attn_bias = None
 
             h_res = h
             h = layer.ln1(h)

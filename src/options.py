@@ -3,8 +3,8 @@ import argparse
 
 def get_options(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--alpha', type=float, default=10)
-    parser.add_argument('--beta', type=float, default=10)
+    parser.add_argument('--alpha', type=float, default=10.0)
+    parser.add_argument('--beta', type=float, default=10.0)
     parser.add_argument('--base_pe', type=int, default=1)
     parser.add_argument('--use_corr_pe',action='store_true')
     parser.add_argument('--use_attn_bias', action='store_true')

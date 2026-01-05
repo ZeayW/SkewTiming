@@ -804,9 +804,10 @@ if __name__ == "__main__":
         options.flag_path_supervise = input_options.flag_path_supervise
         options.flag_group = input_options.flag_group
 
+
+
         options = merge_with_loaded(input_options,options)
-
-
+        
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '-' not in f and '_' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
