@@ -779,6 +779,7 @@ if __name__ == "__main__":
 
 
     seed = random.randint(1, 10000)
+    seed = 5201
     init(seed)
     if options.test_iter:
 

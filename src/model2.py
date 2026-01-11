@@ -681,17 +681,15 @@ class BPN(nn.Module):
         return
     def path_embedding2(self, graph, graph_info):
 
-        if self.flag_rawpath:
+
+        if self.use_pathgnn:
+            feat_p = graph_info['nodes_emb']
+            #feat_p = self.gnn_pathfeat(graph,feat_p)
+        elif self.flag_rawpath:
             feat_p = graph.ndata['feat']
         else:
             feat_p = graph.ndata['h']
-        if self.use_pathgnn:
-            feat_p = self.gnn_pathfeat(graph,feat_p)
-        # elif self.path_feat_choice == 3:
-        #     feat_p = self.gnn_pathfeat(graph,graph.ndata['h'])
-        # else:
-        #     print('wrong path feat choice')
-        #     exit()
+
         path_feat = feat_p[graph_info['POs']]
         if self.path_feat_choice == 1:
             distance =  th.zeros((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
@@ -965,46 +963,23 @@ class BPN(nn.Module):
                 if not self.flag_reverse:
                     return rst, prob_sum, prob_dev, prob_ce, POs_criticalprob
 
-                # print(th.sum(nodes_prob),th.sum(graph.ndata['hp']))
-                # graph.ndata['hp'] = nodes_prob
 
-                nodes_emb = graph.ndata['h']
+                if self.use_pathgnn:
+                    nodes_emb = self.gnn_pathfeat(graph,graph.ndata['feat'])
+                else:
+                    nodes_emb = graph.ndata['h']
 
                 PIs_mask = graph.ndata['is_pi'] == 1
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
 
                 nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
 
-                # nodes_dst_tr = th.transpose(th.log(nodes_dst+1), 0, 1)
-                # nodes_prob_tr = nodes_prob_tr*nodes_dst_tr
-
-                # graph_info['PO2PI_prob'] = PIs_prob
-                #graph_info['nodes_prob'] = nodes_prob
                 graph_info['PO2node_prob'] = nodes_prob_tr
-                # graph_info['PO2node_prob'] = nodes_prob_tr
+                graph_info['nodes_emb'] = nodes_emb
 
-                # graph_info['PIs_mask'] = PIs_mask
-                # self.find_criticalpath(graph,graph_info)
-                # self.path_embedding(graph,graph_info)
-                # print(nodes_dst.shape,th.max(nodes_dst,dim=1).values.shape)
-                # nodes_dst = nodes_dst / th.max(nodes_dst,dim=1).values
-                # nodes_prob_tr = th.transpose(nodes_prob*nodes_dst, 0, 1)
 
-                # h_global = th.matmul(nodes_prob_tr, nodes_emb)
+                h_global = th.matmul(nodes_prob_tr, nodes_emb)
 
-                if self.global_info_choice == 24:
-                    h_global = th.matmul(nodes_prob_tr, graph.ndata['feat'])
-                    h_global = self.mlp_global(h_global)
-                elif self.global_info_choice == 25:
-                    h_global = th.matmul(nodes_prob_tr, self.mlp_global(graph.ndata['feat']))
-                else:
-                    h_global = th.matmul(nodes_prob_tr, nodes_emb)
-
-                # h_global = th.matmul(th.transpose(nodes_prob*nodes_dst, 0, 1), nodes_emb)
-
-                # h_global = self.activation(h_global)
-
-                # h_global = (1 / th.sum(nodes_prob_tr, dim=1)).unsqueeze(1) * h_global
 
                 if self.global_info_choice == 2:
                     h_pi = th.matmul(PIs_prob, graph.ndata['h'][PIs_mask])
