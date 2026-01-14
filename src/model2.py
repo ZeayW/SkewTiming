@@ -982,8 +982,8 @@ class BPN(nn.Module):
                 graph_info['nodes_emb'] = nodes_emb
 
 
-                #h_global = th.matmul(nodes_prob_tr, nodes_emb)
-                h_global = th.matmul(nodes_prob_tr, graph.ndata['h'])
+                h_global = th.matmul(nodes_prob_tr, nodes_emb)
+                #h_global = th.matmul(nodes_prob_tr, graph.ndata['h'])
 
 
                 if self.global_info_choice == 2:
