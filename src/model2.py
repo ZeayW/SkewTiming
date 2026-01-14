@@ -227,8 +227,12 @@ class BPN(nn.Module):
                                                use_corr_pe=use_corr_pe, use_corr_bias=use_attn_bias)
 
         if self.global_cat_choice == 8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2), 1)
-        if self.global_cat_choice in [9, 11, 12, 13, 15]: self.mlp_w2 = MLP(1, hidden_dim, 1)
-        if self.global_cat_choice in [10, 14, 16, 18, 19, 23, 25]: self.mlp_w2 = MLP(2, hidden_dim, 1)
+        if self.global_cat_choice in [9, 11, 12, 13, 15]:
+            self.mlp_w2 = MLP(1, hidden_dim, 1)
+            self.mlp_w3 = MLP(1, hidden_dim, 1)
+        if self.global_cat_choice in [10, 14, 16, 18, 19, 23, 25]:
+            self.mlp_w2 = MLP(2, hidden_dim, 1)
+            self.mlp_w3 = MLP(2, hidden_dim, 1)
         if self.global_cat_choice in [17, 20, 24]: self.mlp_w2 = MLP(3, hidden_dim, 1)
         if self.global_cat_choice in [21]: self.mlp_w2 = MLP(4, hidden_dim, 1)
 
@@ -978,7 +982,8 @@ class BPN(nn.Module):
                 graph_info['nodes_emb'] = nodes_emb
 
 
-                h_global = th.matmul(nodes_prob_tr, nodes_emb)
+                #h_global = th.matmul(nodes_prob_tr, nodes_emb)
+                h_global = th.matmul(nodes_prob_tr, graph.ndata['h'])
 
 
                 if self.global_info_choice == 2:
@@ -1105,6 +1110,7 @@ class BPN(nn.Module):
                         -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
                     h_global = th.cat((h_global, h_etp), dim=1)
 
+
                 if self.global_cat_choice == 0:
                     h = th.cat((rst, h_global), dim=1)
                 elif self.global_cat_choice == 1:
@@ -1221,12 +1227,14 @@ class BPN(nn.Module):
                     h = h + w * h_global
 
                 if self.flag_transformer == 1:
-                    # h_pathW = self.path_embedding(graph, graph_info)
-                    h_pathW = self.path_embedding2(graph, graph_info)
+                    w = 1
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
+                    w = self.mlp_w3(th.cat((etp, minmax), dim=1))
+                    #w = self.mlp_w3(etp, dim=1))
 
-                    # print('f',th.sum(h_pathW),th.sum(h))
-                    # exit()
-                    h = th.cat((h, h_pathW), dim=1)
+                    h_pathW = self.path_embedding2(graph, graph_info)
+                    h = th.cat((h, w*h_pathW), dim=1)
                 elif self.flag_transformer == 2:
                     h = th.cat((h, h_path), dim=1)
                 elif self.flag_transformer == 3:
