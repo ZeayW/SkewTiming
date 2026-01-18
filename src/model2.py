@@ -846,6 +846,7 @@ class BPN(nn.Module):
         else:
             path_emb = self.pathformer(path_feat, path_lengths)
 
+
         if self.path_delay_choice ==1:
             delay_emb = self.mlp_delay(path_inputdelay)
             path_emb = path_emb + delay_emb
@@ -983,7 +984,7 @@ class BPN(nn.Module):
 
                 if self.use_pathgnn:
                     gnn_input = th.cat((graph.ndata['feat'],graph.ndata['delay']),dim=1) if self.path_delay_choice==4 else graph.ndata['feat']
-                    graph_info['nodes_emb'] = self.gnn_pathfeat(graph, graph.ndata['feat'])
+                    graph_info['nodes_emb'] = self.gnn_pathfeat(graph, gnn_input)
                 else:
                     graph_info['nodes_emb'] = graph.ndata['h']
 
