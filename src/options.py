@@ -1,6 +1,5 @@
 import argparse
 
-
 def get_options(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--alpha', type=float, default=10.0)
@@ -27,6 +26,7 @@ def get_options(args=None):
     parser.add_argument('--use_pathgnn', action='store_true')
     parser.add_argument('--path_feat_choice', type=int,default=0,help='')
     parser.add_argument('--path_corr_choice', type=int, default=0)
+    parser.add_argument('--path_delay_choice', type=int, default=-1)
     parser.add_argument('--flag_singlepath', action='store_true')
     parser.add_argument('--flag_degree', action='store_true')
     parser.add_argument('--flag_width', action='store_true')

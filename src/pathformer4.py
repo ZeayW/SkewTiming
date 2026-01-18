@@ -85,6 +85,38 @@ class CorrPositionalEncodingStrong(nn.Module):
         return x + pe
 
 
+# ----------------- Delay Encoder -----------------
+
+class DelayFeatureEncoder(nn.Module):
+    """
+    Projects scalar input delay [B] to [B, 1, d_model] and adds to features.
+    """
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(1, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model)
+        )
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x: torch.Tensor, input_delay: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, L, D]
+        input_delay: [B] or [B, 1]
+        """
+        if input_delay.dim() == 1:
+            input_delay = input_delay.unsqueeze(-1)  # [B, 1]
+
+        # Project delay to embedding dimension
+        delay_emb = self.proj(input_delay.float())  # [B, D]
+        delay_emb = self.norm(delay_emb).unsqueeze(1)  # [B, 1, D]
+
+        # Add to all tokens in the sequence
+        return x + delay_emb
+
+
 class NeighborCorrBias(nn.Module):
     def __init__(self, alpha: float = 0.7):
         super().__init__()
@@ -195,7 +227,6 @@ class BiasedMultiheadAttention(nn.Module):
         out = self.mha.out_proj(out)
         return out
 
-
 class PathTransformerW(nn.Module):
     """
     One-sink-per-path transformer:
@@ -222,6 +253,8 @@ class PathTransformerW(nn.Module):
         self.input_proj = nn.Linear(d_in, d_model) if d_in != d_model else nn.Identity()
         self.use_corr_pe = use_corr_pe
         self.use_corr_bias = use_attn_bias
+
+        self.delay_enc = DelayFeatureEncoder(d_model)
 
         if use_corr_pe:
             self.corr_pe = CorrPositionalEncodingStrong(
@@ -252,7 +285,8 @@ class PathTransformerW(nn.Module):
 
         self.norm_out = nn.LayerNorm(d_model)
 
-    def forward(self, x, lengths, c_local: torch.Tensor | None = None, c_sink: torch.Tensor | None = None):
+
+    def forward(self, x, lengths, input_delay: torch.Tensor | None = None,c_local: torch.Tensor | None = None, c_sink: torch.Tensor | None = None):
         """
         x: [B,L,d_in], lengths: [B]
         c_local: [B,L] (c_local[:,0]=0), c_sink: [B,L]
@@ -264,6 +298,8 @@ class PathTransformerW(nn.Module):
         mask = ar >= lengths.unsqueeze(1)  # [B,L]
 
         h = self.input_proj(x)
+        if input_delay is not None:
+            h = self.delay_enc(h, input_delay)
 
         if c_local is None:
             c_local = torch.zeros(B, L, device=device, dtype=h.dtype)

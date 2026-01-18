@@ -209,6 +209,7 @@ def init_model(options):
                 use_pathgnn = options.use_pathgnn,
                 path_feat_choice=options.path_feat_choice,
                 path_corr_choice = options.path_corr_choice,
+                path_delay_choice= options.path_delay_choice,
                 base_pe=base_pe,
                 use_attn_bias=options.use_attn_bias,
                 use_corr_pe=options.use_corr_pe,

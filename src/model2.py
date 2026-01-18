@@ -147,6 +147,7 @@ class BPN(nn.Module):
                  use_pathgnn=True,
                  path_feat_choice=0,
                  path_corr_choice=0,
+                 path_delay_choice = -1,
                  base_pe='learned',
                  use_corr_pe=False,
                  use_attn_bias=False,
@@ -172,6 +173,7 @@ class BPN(nn.Module):
         self.use_pathgnn = use_pathgnn
         self.path_feat_choice = path_feat_choice
         self.path_corr_choice = path_corr_choice
+        self.path_delay_choice = path_delay_choice
         self.flag_singlepath = flag_singlepath
         self.flag_delay = flag_delay
         self.flag_degree = flag_degree
@@ -211,6 +213,8 @@ class BPN(nn.Module):
                 gnn_indim = infeat_dim1 + infeat_dim2
             else:
                 gnn_indim = hidden_dim
+            if self.path_delay_choice == 4:
+                gnn_indim += 1
             if self.path_feat_choice in [1,2,3]:
                 gnn_outdim = int(tf_dim/2)
             else:
@@ -221,6 +225,10 @@ class BPN(nn.Module):
             self.proj_pathfeat = nn.Linear(1,int(tf_dim/2))
         elif self.path_feat_choice in [3]:
             self.proj_pathfeat = nn.Linear(2, int(tf_dim / 2))
+
+        if self.path_delay_choice in [1,2,3]:
+           self.mlp_delay = MLP(1,tf_dim,tf_dim)
+
 
         if self.flag_gt:
             self.pathgformer = PathGraphFormer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=2, d_ff=128,
@@ -274,6 +282,8 @@ class BPN(nn.Module):
             new_out_dim += 1
         elif self.global_cat_choice in [1, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]:
             new_out_dim += self.hidden_dim
+        if self.path_delay_choice in [3]:
+            new_out_dim += tf_dim
 
         if self.flag_transformer in [1, 2, 3]:
             if self.global_cat_choice != 25: new_out_dim += tf_dim
@@ -597,12 +607,13 @@ class BPN(nn.Module):
     def prop_backward_new(self, graph, graph_info):
         topo_r = graph_info['topo_r']
 
-        if self.flag_rawpath:
+        if self.use_pathgnn:
+            feat_p = graph_info['nodes_emb']
+            # feat_p = self.gnn_pathfeat(graph,feat_p)
+        elif self.flag_rawpath:
             feat_p = graph.ndata['feat']
         else:
             feat_p = graph.ndata['h']
-        if self.use_pathgnn:
-            feat_p = self.gnn_pathfeat(graph,feat_p)
 
         path_feat = feat_p[graph_info['POs']]
         if self.path_feat_choice == 1:
@@ -712,6 +723,8 @@ class BPN(nn.Module):
 
         path_feat = path_feat.reshape(path_feat.shape[0], 1, path_feat.shape[1])
         path_lengths = th.zeros(len(graph_info['POs']), dtype=th.float, device=graph.device)
+        path_inputdelay = th.zeros((len(graph_info['POs']),1), dtype=th.float, device=graph.device)
+        path_numPI = th.zeros((len(graph_info['POs']),1), dtype=th.float, device=graph.device)
         is_ended = th.zeros(len(graph_info['POs']), dtype=th.bool, device=graph.device)
 
         if self.use_corr_bias or self.use_corr_pe:
@@ -752,10 +765,19 @@ class BPN(nn.Module):
                 is_ended[is_ended_mask] = True
                 path_lengths[is_ended_mask] = l + 1
 
+
                 nodes_feat_l = feat_p[nodes]
                 path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
                 num_critical = th.sum(critical_mask, dim=1, keepdim=True)
                 path_feat_l = path_feat_l / num_critical.clamp(min=1)
+
+                nodes_delay_l = graph.ndata['delay'][nodes]
+
+                nodes_delay_l = th.matmul(critical_mask.float(), nodes_delay_l)
+                #print(path_inputdelay.shape,nodes_delay_l.shape)
+                path_inputdelay += nodes_delay_l
+                path_numPI += num_critical*nodes_delay_l.clamp(max=1)
+
                 if self.path_feat_choice ==1:
                     distance = (l+1)*th.ones((path_feat_l.shape[0],1),dtype=th.float,device=graph.device)
                     feat_raw = self.proj_pathfeat(distance)
@@ -806,12 +828,15 @@ class BPN(nn.Module):
                 nodes = th.unique(nodes)
                 l += 1
 
-
+        path_inputdelay = path_inputdelay / path_numPI.clamp(min=1)
+        #print(path_inputdelay)
         # path_emb = self.pathformer(path_feat,path_lengths)
+
         if self.use_corr_pe or self.use_corr_bias:
             c_sink = c_sink[:, :l + 1]
             c_local = c_local[:, :l + 1]
-            path_emb = self.pathformer(path_feat, path_lengths, c_sink=c_sink, c_local=c_local)
+            input_delay =  path_inputdelay if self.path_delay_choice == 0 else None
+            path_emb = self.pathformer(path_feat, path_lengths, input_delay = input_delay,c_sink=c_sink, c_local=c_local)
             # e2 = self.pathformer(path_feat, path_lengths)
             # e3 = self.pathformer(path_feat, path_lengths,c_local=c_local)
             # print(path_emb)
@@ -820,6 +845,16 @@ class BPN(nn.Module):
             # exit()
         else:
             path_emb = self.pathformer(path_feat, path_lengths)
+
+        if self.path_delay_choice ==1:
+            delay_emb = self.mlp_delay(path_inputdelay)
+            path_emb = path_emb + delay_emb
+        elif self.path_delay_choice ==2:
+            delay_emb = self.mlp_delay(path_inputdelay)
+            path_emb = self.activation(path_emb + delay_emb)
+        elif self.path_delay_choice ==3:
+            delay_emb = self.mlp_delay(path_inputdelay)
+            path_emb = th.cat((path_emb,delay_emb),dim=1)
 
         return path_emb
         # return graph.ndata['hp'], graph.ndata['hd']
@@ -946,6 +981,12 @@ class BPN(nn.Module):
 
             if self.flag_reverse or self.flag_path_supervise:
 
+                if self.use_pathgnn:
+                    gnn_input = th.cat((graph.ndata['feat'],graph.ndata['delay']),dim=1) if self.path_delay_choice==4 else graph.ndata['feat']
+                    graph_info['nodes_emb'] = self.gnn_pathfeat(graph, graph.ndata['feat'])
+                else:
+                    graph_info['nodes_emb'] = graph.ndata['h']
+
                 POs_criticalprob = None
                 POs = graph_info['POs']
                 h_path = None
@@ -969,10 +1010,6 @@ class BPN(nn.Module):
                     return rst, prob_sum, prob_dev, prob_ce, POs_criticalprob
 
 
-                if self.use_pathgnn:
-                    nodes_emb = self.gnn_pathfeat(graph,graph.ndata['feat'])
-                else:
-                    nodes_emb = graph.ndata['h']
 
                 PIs_mask = graph.ndata['is_pi'] == 1
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
@@ -980,15 +1017,14 @@ class BPN(nn.Module):
                 nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
 
                 graph_info['PO2node_prob'] = nodes_prob_tr
-                graph_info['nodes_emb'] = nodes_emb
 
 
-                h_global = th.matmul(nodes_prob_tr, nodes_emb)
+                h_global = th.matmul(nodes_prob_tr, graph_info['nodes_emb'])
                 # h_global2 = th.matmul(nodes_prob_tr, graph.ndata['h'])
                 # print(h_global.shape,h_global2.shape)
 
                 if self.global_info_choice in [2,8,10,11, 13, 14, 15, 16, 17]:
-                    h_pi = th.matmul(PIs_prob, nodes_emb[PIs_mask])
+                    h_pi = th.matmul(PIs_prob, graph_info['nodes_emb'][PIs_mask])
                 elif self.global_info_choice in [3,6,8]:
                     h_pi = th.matmul(PIs_prob, graph.ndata['delay'][PIs_mask])
                 else:
@@ -1228,10 +1264,10 @@ class BPN(nn.Module):
 
                 if self.flag_transformer == 1:
                     w = 1
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
-                    w = self.mlp_w3(th.cat((etp, minmax), dim=1))
-                    #w = self.mlp_w3(etp, dim=1))
+                    # etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    # minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
+                    # w = self.mlp_w3(th.cat((etp, minmax), dim=1))
+                    #w = self.mlp_w3(etp)
 
                     h_pathW = self.path_embedding2(graph, graph_info)
                     h = th.cat((h, w*h_pathW), dim=1)
