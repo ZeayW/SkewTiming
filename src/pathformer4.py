@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple
-
+import math
 
 class SinusoidalPositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 4096):
@@ -124,9 +124,6 @@ class DelayFeatureEncoder(nn.Module):
         return x + delay_emb
 
 
-import torch
-import torch.nn as nn
-import math
 
 
 class PositionAwareDelayEncoder(nn.Module):
