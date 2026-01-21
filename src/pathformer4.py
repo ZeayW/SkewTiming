@@ -94,6 +94,7 @@ class DelayFeatureEncoder(nn.Module):
 
     def __init__(self, d_model: int):
         super().__init__()
+
         self.proj = nn.Sequential(
             nn.Linear(1, d_model),
             nn.GELU(),
@@ -106,8 +107,14 @@ class DelayFeatureEncoder(nn.Module):
         x: [B, L, D]
         input_delay: [B] or [B, 1]
         """
+        B, L, D = x.shape
+        device = x.device
+
         if input_delay.dim() == 1:
             input_delay = input_delay.unsqueeze(-1)  # [B, 1]
+
+        positions = torch.arange(L, device=device).unsqueeze(0)
+
 
         # Project delay to embedding dimension
         delay_emb = self.proj(input_delay.float())  # [B, D]
@@ -115,6 +122,70 @@ class DelayFeatureEncoder(nn.Module):
 
         # Add to all tokens in the sequence
         return x + delay_emb
+
+
+import torch
+import torch.nn as nn
+import math
+
+
+class PositionAwareDelayEncoder(nn.Module):
+    """
+    Encodes input_delay combined with sinusoidal position information.
+    Handles variable lengths without a fixed max_len.
+    """
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.d_half = d_model // 2
+
+        # Projection for scalar input_delay -> half dimension
+        self.delay_proj = nn.Linear(1, self.d_half)
+
+        # Projection for fusion
+        self.out_proj = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model)
+        )
+        self.norm = nn.LayerNorm(d_model)
+
+    def _get_sinusoidal_encoding(self, L: int, d_emb: int, device: torch.device):
+        """Generates sinusoidal PE for length L on the fly."""
+        position = torch.arange(L, device=device, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_emb, 2, device=device).float() *
+                             (-math.log(10000.0) / d_emb))
+
+        pe = torch.zeros(L, d_emb, device=device)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe.unsqueeze(0)  # [1, L, d_emb]
+
+    def forward(self, x: torch.Tensor, input_delay: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, L, D]
+        input_delay: [B] scalar
+        """
+        B, L, D = x.shape
+        device = x.device
+
+        # 1. Process Delay: [B] -> [B, L, d_half]
+        if input_delay.dim() == 1:
+            input_delay = input_delay.unsqueeze(-1)
+
+        d_feat = self.delay_proj(input_delay.float())  # [B, d_half]
+        d_feat = d_feat.unsqueeze(1).expand(-1, L, -1)  # [B, L, d_half]
+
+        # 2. Process Position: Sinusoidal [1, L, d_half]
+        # Dynamically generate for current length L
+        p_feat = self._get_sinusoidal_encoding(L, self.d_half, device)
+        p_feat = p_feat.expand(B, -1, -1)  # [B, L, d_half]
+
+        # 3. Concatenate (d_half + d_half = d_model) and Project
+        combined = torch.cat([d_feat, p_feat], dim=-1)  # [B, L, D]
+        delay_emb = self.out_proj(combined)  # [B, L, D]
+
+        return x + self.norm(delay_emb)
 
 
 class NeighborCorrBias(nn.Module):
@@ -254,7 +325,7 @@ class PathTransformerW(nn.Module):
         self.use_corr_pe = use_corr_pe
         self.use_corr_bias = use_attn_bias
 
-        self.delay_enc = DelayFeatureEncoder(d_model)
+        self.delay_enc = PositionAwareDelayEncoder(d_model)
 
         if use_corr_pe:
             self.corr_pe = CorrPositionalEncodingStrong(

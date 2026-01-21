@@ -210,11 +210,10 @@ class BPN(nn.Module):
         #assert self.path_feat_choice in [0,1,2,3,4], "Wrong path feat choice"
         if self.use_pathgnn:
             if self.flag_rawpath:
-                gnn_indim = infeat_dim1 + infeat_dim2
+                gnn_indim = infeat_dim1 + infeat_dim2 +1
             else:
                 gnn_indim = hidden_dim
-            if self.path_delay_choice == 4:
-                gnn_indim += 1
+
             if self.path_feat_choice in [1,2,3]:
                 gnn_outdim = int(tf_dim/2)
             else:
@@ -983,7 +982,7 @@ class BPN(nn.Module):
             if self.flag_reverse or self.flag_path_supervise:
 
                 if self.use_pathgnn:
-                    gnn_input = th.cat((graph.ndata['feat'],graph.ndata['delay']),dim=1) if self.path_delay_choice==4 else graph.ndata['feat']
+                    gnn_input = th.cat((graph.ndata['feat'],graph.ndata['delay']),dim=1)
                     graph_info['nodes_emb'] = self.gnn_pathfeat(graph, gnn_input)
                 else:
                     graph_info['nodes_emb'] = graph.ndata['h']
