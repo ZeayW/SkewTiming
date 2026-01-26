@@ -206,6 +206,7 @@ def init_model(options):
                 global_info_choice= options.global_info_choice,
                 alpha = options.alpha,
                 beta = options.beta,
+                flag_residual=options.flag_residual,
                 use_pathgnn = options.use_pathgnn,
                 path_feat_choice=options.path_feat_choice,
                 path_corr_choice = options.path_corr_choice,
@@ -402,7 +403,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                                                                                     graphs_info, j, flag_addedge)
                     POs_label = POs_label[POs_mask]
 
-                    cur_labels_hat, prob_sum,prob_dev,prob_ce,cur_POs_criticalprob = model(sampled_graphs, graphs_info)
+                    cur_labels_hat, _,_,prob_sum,prob_dev,prob_ce,cur_POs_criticalprob = model(sampled_graphs, graphs_info)
 
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
 
@@ -543,16 +544,15 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                     sampled_graphs = init_criticality_matrix(sampled_graphs, POs)
 
                 for j in range(num_cases):
-                    # if j!=0: continue
+                    #if j==0: continue
 
                     #torch.cuda.empty_cache()
                     flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
                     POs_label, PIs_delay, sampled_graphs,graphs_info = gather_data(sampled_data,sampled_graphs,graphs_info,j,flag_addedge)
 
-
                     POs_label = POs_label[POs_mask]
 
-                    cur_labels_hat, prob_sum,prob_dev,prob_ce,_ = model(sampled_graphs, graphs_info)
+                    cur_labels_hat,cur_labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_ = model(sampled_graphs, graphs_info)
 
 
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
@@ -711,7 +711,7 @@ def train(model):
                                                                                     graphs_info, i, flag_addedge)
 
                     POs_label = POs_label[POs_mask]
-                    labels_hat,prob_sum,prob_dev,prob_ce,_ = model(sampled_graphs, graphs_info)
+                    labels_hat, labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_ = model(sampled_graphs, graphs_info)
                     total_num += len(POs_label)
                     train_loss = Loss(labels_hat, POs_label)
                     path_loss =th.tensor(0.0)
@@ -731,6 +731,9 @@ def train(model):
                         #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(prob_ce)
                         #train_loss = th.mean(th.pow(labels_hat - POs_label,2)) + th.mean(prob_ce)
                         train_loss += th.mean(prob_ce)
+                        if options.flag_residual:
+                            train_loss += Loss(labels_hat_residual, POs_label-path_inputdelay)
+                            #print(th.cat((labels_hat_residual+path_inputdelay-labels_hat,labels_hat-POs_label),dim=1))
                         #train_loss = th.mean((th.exp(1 - path_loss)) * th.pow(labels_hat - POs_label,2))
 
 

@@ -19,6 +19,7 @@ def get_options(args=None):
     parser.add_argument('--remove01',action='store_true')
     parser.add_argument('--inv_choice',type=int,default=-1)
     parser.add_argument('--quick',action='store_true')
+    parser.add_argument('--flag_residual', action='store_true')
     parser.add_argument('--flag_continue_trainpath', action='store_true')
     parser.add_argument('--flag_gt', action='store_true')
     parser.add_argument('--flag_transformer', type=int,default=1,help='valid value in [1,2,3]')
