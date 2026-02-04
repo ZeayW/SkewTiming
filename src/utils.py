@@ -2,6 +2,7 @@ import torch as th
 import dgl
 from torch import nn
 from dgl import function as fn
+import os
 from options import get_options
 import matplotlib.pyplot as plt
 import pickle
@@ -323,6 +324,116 @@ def draw_bar():
 
     plt.savefig('bar5.png')
 
+
+import pickle
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import torch
+
+
+# 1. 加载数据
+def load_metadata(pkl_path,metadata=None):
+    if metadata is None:
+        print(f"Loading metadata from {pkl_path}...")
+        with open(pkl_path, 'rb') as f:
+            metadata = pickle.load(f)
+
+    # 将 Tensor 转换为 Numpy
+    data_dict = {}
+    for key, value in metadata.items():
+        if isinstance(value, torch.Tensor):
+            data_dict[key] = value.numpy().flatten()  # 确保是1D数组
+        elif isinstance(value, list):
+            data_dict[key] = np.array(value)
+        else:
+            data_dict[key] = value
+
+    df = pd.DataFrame(data_dict)
+
+    # 2. 计算误差
+    # Absolute Error
+    df['err_m1'] = np.abs(df['labels_hat1'] - df['labels_gt'])
+    df['err_m2'] = np.abs(df['labels_hat2'] - df['labels_gt'])
+
+    # Error Difference (Method 1 - Method 2)
+    # < 0 means Method 1 is better, > 0 means Method 2 is better
+    df['err_diff'] = df['err_m1'] - df['err_m2']
+
+    # 标记哪个方法更好
+    df['better_method'] = np.where(df['err_m1'] < df['err_m2'], 'Method 1 (Embedding)', 'Method 2 (Residual)')
+
+    return df
+
+
+# 2. 绘图并保存函数
+def plot_feature_vs_error(df, feature_name, x_label=None, bins=10, save_dir='plots'):
+    """
+    绘制并保存分析图
+    """
+    if x_label is None:
+        x_label = feature_name
+
+    # 创建保存目录
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    plt.figure(figsize=(18, 5))
+
+    # --- Subplot 1: MAE Trend ---
+    plt.subplot(1, 3, 1)
+    try:
+        df['bin'] = pd.qcut(df[feature_name], q=bins, duplicates='drop')
+    except:
+        df['bin'] = pd.cut(df[feature_name], bins=bins)
+
+    bin_stats = df.groupby('bin', observed=True)[['err_m1', 'err_m2']].mean().reset_index()
+    bin_stats['x_center'] = bin_stats['bin'].apply(lambda x: x.mid).astype(float)
+
+    sns.lineplot(data=bin_stats, x='x_center', y='err_m1', marker='o', label='Method 1 (Emb)', color='blue')
+    sns.lineplot(data=bin_stats, x='x_center', y='err_m2', marker='s', label='Method 2 (Res)', color='red')
+
+    plt.xlabel(x_label)
+    plt.ylabel('Mean Absolute Error (MAE)')
+    plt.title(f'MAE Trend vs {x_label}')
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.legend()
+
+    # --- Subplot 2: Preference Probability ---
+    plt.subplot(1, 3, 2)
+    df['m2_wins'] = (df['err_m2'] < df['err_m1']).astype(int)
+    win_rates = df.groupby('bin', observed=True)['m2_wins'].mean().reset_index()
+    win_rates['x_center'] = win_rates['bin'].apply(lambda x: x.mid).astype(float)
+
+    sns.lineplot(data=win_rates, x='x_center', y='m2_wins', marker='d', color='green', linewidth=2)
+    plt.axhline(0.5, color='gray', linestyle='--', alpha=0.5, label='50% Threshold')
+
+    plt.xlabel(x_label)
+    plt.ylabel('Prob. Method 2 is Better')
+    plt.title(f'Preference Probability vs {x_label}')
+    plt.ylim(0, 1.0)
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+    # --- Subplot 3: Error Diff Distribution ---
+    plt.subplot(1, 3, 3)
+    sample_df = df.sample(n=min(2000, len(df)), random_state=42)
+    sns.scatterplot(data=sample_df, x=feature_name, y='err_diff',
+                    hue='better_method', palette={'Method 1 (Embedding)': 'blue', 'Method 2 (Residual)': 'red'},
+                    alpha=0.6, s=20)
+    plt.axhline(0, color='black', linestyle='-', linewidth=1)
+    plt.xlabel(x_label)
+    plt.ylabel('Err(M1) - Err(M2)')
+    plt.title(f'Error Diff (>0 means M2 better)')
+
+    plt.tight_layout()
+
+    # === 保存逻辑 ===
+    filename = f"analysis_{feature_name}.png"
+    save_path = os.path.join(save_dir, filename)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    #print(f"Saved plot to {save_path}")
+    plt.close()  # 关闭图形释放内存
 
 if __name__ == "__main__":
     draw_bar()

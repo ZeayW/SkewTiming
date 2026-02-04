@@ -70,6 +70,125 @@ class VanillaDirGNN(nn.Module):
         return graph.ndata['feat_gnn']
 
 
+def extract_endpoint_metadata(graph, nodesprob, PIsmask):
+    """
+    Extract metadata for each endpoint using parallel tensor operations.
+    Compatible with older PyTorch versions (manual nan-stats calculation).
+    """
+    device = nodesprob.device
+    num_endpoints = nodesprob.shape[1]
+
+    # Get PI indices
+    PIsmask_1d = PIsmask.squeeze(-1)  # [num_nodes]
+
+    # Extract PI correlations: [num_PIs, num_endpoints]
+    pi_corr = nodesprob[PIsmask_1d, :]
+
+    # Create mask for non-zero correlations (Valid Inputs)
+    # [num_PIs, num_endpoints]
+    nonzero_mask = pi_corr > 0
+    mask_float = nonzero_mask.float()
+
+    # Calculate counts (N) for each endpoint
+    counts = mask_float.sum(dim=0)  # [num_endpoints]
+    valid_endpoints = counts > 0  # Mask for endpoints that have at least 1 input
+
+    # ===== Helper: Safe Mean & Std Calculation =====
+    def compute_masked_stats(values, mask, counts):
+        # 1. Mean
+        # Zero out invalid values so sum is correct
+        safe_values = torch.where(mask, values, torch.zeros_like(values))
+        val_sum = safe_values.sum(dim=0)
+
+        # Avoid division by zero
+        safe_counts = counts.clamp(min=1)
+        mean = val_sum / safe_counts
+
+        # 2. Std
+        # Subtract mean (broadcasted)
+        diff = (values - mean.unsqueeze(0))
+        # Zero out diffs where mask is False
+        diff_masked = torch.where(mask, diff, torch.zeros_like(diff))
+        sq_diff_sum = diff_masked.pow(2).sum(dim=0)
+
+        # Sample variance (N-1)
+        denom = (counts - 1).clamp(min=0)
+        # Avoid div by zero for N=0 or N=1
+        safe_denom = denom.clamp(min=1)
+
+        var = sq_diff_sum / safe_denom
+        std = torch.sqrt(var)
+
+        # Zero out stats where N=0 (mean) or N<=1 (std)
+        mean = torch.where(counts > 0, mean, torch.zeros_like(mean))
+        std = torch.where(counts > 1, std, torch.zeros_like(std))
+
+        return mean, std
+
+    # ===== 1) Input Correlation Distribution =====
+    corr_mean, corr_std = compute_masked_stats(pi_corr, nonzero_mask, counts)
+
+    # Max/Min
+    # Initialize with small/large values
+    neg_inf = torch.tensor(float('-inf'), device=device)
+    pos_inf = torch.tensor(float('inf'), device=device)
+
+    # Use where to put -inf/inf in invalid spots so max/min ignores them
+    # But if a column is ALL invalid, max/min will return -inf/inf, we fix that later
+    masked_max_input = torch.where(nonzero_mask, pi_corr, neg_inf)
+    masked_min_input = torch.where(nonzero_mask, pi_corr, pos_inf)
+
+    corr_max = masked_max_input.max(dim=0).values
+    corr_min = masked_min_input.min(dim=0).values
+
+    # Fix results for endpoints with no inputs (0 correlation)
+    corr_max = torch.where(valid_endpoints, corr_max, torch.zeros_like(corr_max))
+    corr_min = torch.where(valid_endpoints, corr_min, torch.zeros_like(corr_min))
+
+    num_nonzero = counts
+
+    # Calculate the entropy of the correlation
+    PIs_prob = th.transpose(nodesprob[PIsmask_1d], 0, 1)
+    nodes_prob_tr = th.transpose(nodesprob, 0, 1)
+    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr.clamp(min=1e-10)), dim=1).unsqueeze(1)
+    etp_all_norm = etp_all.squeeze(1)/ th.sum(nodes_prob_tr,dim=1).clamp(min=1)
+    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob.clamp(min=1e-10)), dim=1).unsqueeze(1)
+
+    # ===== 2) Input Arrival Time Variance =====
+    # Get raw arrival times: [num_PIs] -> [num_PIs, 1] -> [num_PIs, num_endpoints]
+    pi_arrivals = graph.ndata['delay'][PIsmask_1d]  # [num_PIs, 1]
+    pi_arrivals_expanded = pi_arrivals.expand(-1, num_endpoints)
+
+    # Use the SAME mask (correlation > 0) to define relevant inputs
+    arrival_mean_tensor, arrival_std_tensor = compute_masked_stats(
+        pi_arrivals_expanded, nonzero_mask, counts
+    )
+
+
+    # ===== 5) Fanin Size =====
+    # Create mask for non-zero correlations (Valid Nodes)
+    # [num_nodes, num_endpoints]
+    nonzero_mask_all = nodesprob > 0
+    mask_float_all = nonzero_mask_all.float()
+    # Calculate counts (N) for each endpoint
+    fanin_size = mask_float_all.sum(dim=0)  # [num_endpoints]
+
+    # Package into dict
+    metadata = {
+        'corr_min': corr_min,
+        'corr_max': corr_max,
+        'corr_std': corr_std,
+        'corr_entropy_input': etp_pi,
+        'corr_entropy_all': etp_all,
+        'corr_entropy_all_norm': etp_all_norm,
+        'num_corr_inputs': num_nonzero,
+        'fanin_size':fanin_size,
+        'arrival_time_std': arrival_std_tensor,
+        'arrival_time_mean': arrival_mean_tensor,
+    }
+
+    return metadata
+
 
 def row_softmax_on_nonzero(x: torch.Tensor) -> torch.Tensor:
     """
@@ -677,35 +796,8 @@ class BPN(nn.Module):
 
         return graph.ndata['hp'], ep_path_emb
 
-    def find_criticalpath(self, graph, graph_info):
-        POs = graph_info['POs']
-        PO2node_prob = graph_info['PO2node_prob']
 
-        critical_paths = []
-
-        for i, po_id in enumerate(POs):
-            nodes_prob = PO2node_prob[i]
-            critical_path = [(po_id.item(), -1)]
-            cur_nodes = graph.successors(po_id, etype='reverse')
-            pre_nid = po_id.item()
-            while len(cur_nodes) != 0:
-                cur_nodes_prob = nodes_prob[cur_nodes]
-                max_id = th.argmax(cur_nodes_prob)
-                max_nid = cur_nodes[max_id].item()
-                eid = graph.edge_ids(pre_nid, max_nid, etype='reverse')
-                critical_path.append((max_nid, eid))
-                pre_nid = max_nid
-                cur_nodes = graph.successors(critical_path[-1][0], etype='reverse')
-
-            critical_path.reverse()
-            critical_paths.append(critical_path)
-
-        return critical_paths
-
-
-
-        return
-    def path_embedding2(self, graph, graph_info):
+    def path_embedding(self, graph, graph_info):
 
 
         if self.use_pathgnn:
@@ -760,6 +852,13 @@ class BPN(nn.Module):
 
                 critical_mask = th.transpose(graph.ndata['is_critical'][nodes], 0, 1)
 
+                # if th.sum(critical_mask) == 0:
+                #     break
+
+                is_ended_mask = th.logical_and(th.sum(critical_mask, dim=1) == 0, ~is_ended)
+                is_ended[is_ended_mask] = True
+                path_lengths[is_ended_mask] = l + 1
+
                 if th.sum(critical_mask) == 0:
                     break
 
@@ -773,9 +872,8 @@ class BPN(nn.Module):
                     critical_mask = critical_mask & has_true
                     graph.ndata['is_critical'][nodes] = th.transpose(critical_mask, 0, 1)
 
-                is_ended_mask = th.logical_and(th.sum(critical_mask, dim=1) == 0, ~is_ended)
-                is_ended[is_ended_mask] = True
-                path_lengths[is_ended_mask] = l + 1
+                if th.sum(critical_mask) == 0:
+                    break
 
 
                 nodes_feat_l = feat_p[nodes]
@@ -786,12 +884,6 @@ class BPN(nn.Module):
                 nodes_delay_l = graph.ndata['is_critical'][nodes] * graph.ndata['delay'][nodes]
                 nodes_delay_l = th.max(th.transpose(nodes_delay_l,0,1),dim=1).values.unsqueeze(1)
                 path_inputdelay = th.maximum(path_inputdelay,nodes_delay_l)
-                # path_inputdelay += nodes_delay_l
-                # path_numPI += (nodes_delay_l).clamp(max=1)
-
-                # nodes_delay_l = th.matmul(critical_mask.float(), graph.ndata['delay'][nodes])
-                # path_inputdelay += nodes_delay_l
-                # path_numPI += num_critical * nodes_delay_l.clamp(max=1)
 
                 if self.path_feat_choice ==1:
                     distance = (l+1)*th.ones((path_feat_l.shape[0],1),dtype=th.float,device=graph.device)
@@ -843,12 +935,6 @@ class BPN(nn.Module):
                 nodes = th.unique(nodes)
                 l += 1
 
-        #path_inputdelay = path_inputdelay / path_numPI.clamp(min=1)
-
-
-
-        # path_emb = self.pathformer(path_feat,path_lengths)
-
         if self.use_corr_pe or self.use_corr_bias:
             c_sink = c_sink[:, :l + 1]
             c_local = c_local[:, :l + 1]
@@ -859,59 +945,10 @@ class BPN(nn.Module):
             path_emb = self.pathformer(path_feat, path_lengths)
 
 
-
-        return path_emb, path_inputdelay
+        return path_emb, path_lengths,path_inputdelay
         # return graph.ndata['hp'], graph.ndata['hd']
 
-    def path_embedding(self, graph, graph_info):
-
-        critical_paths = self.find_criticalpath(graph, graph_info)
-        paths_feat = []
-        for path in critical_paths:
-            nids = [p[0] for p in path]
-            if self.flag_rawpath:
-                path_feat = graph.ndata['feat'][nids]
-                if self.flag_degree:
-                    path_feat = th.cat((path_feat, graph.ndata['degree'][nids]), dim=1)
-            else:
-                path_feat = graph.ndata['h'][nids]
-
-            paths_feat.append(path_feat)
-
-        x, lengths = pad_paths(paths_feat)
-
-        PO2node_prob = graph_info['PO2node_prob']
-        c_local = torch.zeros(x.size(0), x.size(1), device=graph.device)  # fill per-path valid region only
-        c_sink = torch.zeros(x.size(0), x.size(1), device=graph.device)
-        for i, path in enumerate(critical_paths):
-            nids = [p[0] for p in path]
-            eids = [p[1] for p in path]
-            distance = th.tensor(list(range(len(path), 0, -1)), dtype=th.float, device=graph.device)
-            distance = distance + 1
-            distance = th.log(distance)
-            # distance = distance / th.max(distance)
-            cs = PO2node_prob[i][nids] * distance
-            # print('a',th.sum(cs))
-            # cs = PO2node_prob[i][nids]
-
-            cl = graph.edges['reverse'].data['weight'][eids].squeeze(1)
-            cl = th.roll(cl, shifts=1, dims=0)
-            cl[0] = 0
-
-            c_local[i, :len(nids)] = cl
-            c_sink[i, :len(nids)] = cs
-
-        emb = self.pathformer(x, lengths, c_local=c_local, c_sink=c_sink)
-        # emb2 = self.pathformer(x, lengths)
-
-        # emb = self.pathformer(x, lengths)
-        # print('e', th.sum(emb))
-
-        # emb = self.pathformer(x, lengths)
-
-        return emb
-
-    def forward(self, graph, graph_info):
+    def forward(self, graph, graph_info,flag_meta=False):
 
         topo = graph_info['topo']
         PO_mask = graph_info['POs']
@@ -983,6 +1020,7 @@ class BPN(nn.Module):
             prob_sum, prob_dev, prob_ce = th.tensor([0.0]), th.tensor([0.0]), th.tensor([0.0])
             POs_criticalprob = None
             rst_residual, path_inputdelay = None, None
+            metadata = None
 
             if self.flag_reverse or self.flag_path_supervise:
 
@@ -996,6 +1034,7 @@ class BPN(nn.Module):
                 POs_criticalprob = None
                 POs = graph_info['POs']
                 h_path = None
+
                 if self.flag_transformer in [2, 3, 4]:
                     nodes_prob, h_path = self.prop_backward_new(graph, graph_info)
                 else:
@@ -1013,7 +1052,7 @@ class BPN(nn.Module):
                     prob_ce = graph.ndata['prob_ce'][POs]
 
                 if not self.flag_reverse:
-                    return rst, rst_residual, path_inputdelay, prob_sum, prob_dev, prob_ce, POs_criticalprob
+                    return rst, rst_residual, path_inputdelay, prob_sum, prob_dev, prob_ce, POs_criticalprob,metadata
 
 
 
@@ -1026,6 +1065,8 @@ class BPN(nn.Module):
 
 
                 h_global = th.matmul(nodes_prob_tr, graph_info['nodes_emb'])
+
+                path_emb, path_lengths, path_inputdelay = None,None,None
                 # h_global2 = th.matmul(nodes_prob_tr, graph.ndata['h'])
                 # print(h_global.shape,h_global2.shape)
 
@@ -1268,9 +1309,11 @@ class BPN(nn.Module):
                     h = h + w * h_global
 
                 if self.flag_transformer !=0:
-                    path_emb, path_inputdelay = self.path_embedding2(graph, graph_info)
+
+                    path_emb, path_lengths,path_inputdelay = self.path_embedding(graph, graph_info)
                     if self.flag_residual:
                         rst_residual = self.mlp_out_residual(path_emb)
+
                     delay_emb = self.linear_delay(path_inputdelay) if self.path_delay_choice in [1, 2,3] else path_inputdelay
                     if self.path_delay_choice in [1, 4]:
                         h_pathW = path_emb + delay_emb
@@ -1294,46 +1337,21 @@ class BPN(nn.Module):
 
                 rst = self.mlp_out_new(h)
 
-                return rst, rst_residual,path_inputdelay,prob_sum, prob_dev, prob_ce, POs_criticalprob
+                if flag_meta:
+                    metadata = extract_endpoint_metadata(graph,nodes_prob,PIs_mask)
+                    metadata['critical_input_arrival'] = path_inputdelay.squeeze(1)
+                    metadata['critical_path_length'] = path_lengths
+                    for key,value in metadata.items():
+                        metadata[key] = value.reshape((len(value),1))
 
-            return rst,  rst_residual,path_inputdelay,prob_sum, prob_dev, prob_ce, POs_criticalprob
+                    #     print(key,value.shape)
+                    #     print(value)
+                    # exit()
+                return rst, rst_residual,path_inputdelay,prob_sum, prob_dev, prob_ce, POs_criticalprob,metadata
+
+            return rst,  rst_residual,path_inputdelay,prob_sum, prob_dev, prob_ce, POs_criticalprob,metadata
 
 
-#
-# class Circuitformer(nn.model):
-#     def __init__(self, num_attention_heads=2,
-#                  intermediate_size=256,
-#                  num_hidden_layers=1,
-#                  logits_size=1,
-#                  embedding_dim=30,
-#                  vocab_size=50):
-#         super().__init__()
-#         self.use_gpu = -1
-#         self.train_loss = []
-#         self.val_loss = []
-#
-#         self.bert_model_config = MobileBertConfig(vocab_size=vocab_size,
-#                                                   num_attention_heads=num_attention_heads,
-#                                                   hidden_size=embedding_dim,
-#                                                   num_hidden_layers=num_hidden_layers,
-#                                                   intermediate_size=intermediate_size)
-#
-#         self.bert_model_config.num_labels = logits_size
-#         self.bert_model = MobileBertForSequenceClassification(self.bert_model_config)
-#
-#         self.out_linear = nn.Linear(logits_size, 1)
-#         # self.logits_size = logits_size
-#
-#     def forward(self, seq_enc):
-#         attn_mask = seq_enc != 0
-#
-#         out = self.bert_model(input_ids=seq_enc, attention_mask=attn_mask).logits
-#
-#         if self.hparams.logits_size != 1:
-#             out = self.out_linear(out)
-#
-#         #out = th.ravel(out)
-#         return out
 
 
 class ACCNN(nn.Module):

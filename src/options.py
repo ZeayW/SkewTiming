@@ -22,6 +22,7 @@ def get_options(args=None):
     parser.add_argument('--flag_residual', action='store_true')
     parser.add_argument('--flag_continue_trainpath', action='store_true')
     parser.add_argument('--flag_gt', action='store_true')
+    parser.add_argument('--flag_meta', action='store_true')
     parser.add_argument('--flag_transformer', type=int,default=1,help='valid value in [1,2,3]')
     parser.add_argument('--flag_rawpath', action='store_true')
     parser.add_argument('--use_pathgnn', action='store_true')
