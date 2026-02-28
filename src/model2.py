@@ -373,9 +373,10 @@ class BPN(nn.Module):
         self.probinfo_dim = 32
         self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
 
-        new_out_dim = hidden_dim # the TPE size
-        global_dim = hidden_dim+ self.probinfo_dim if not self.use_pathgnn else gnn_outdim+ self.probinfo_dim
-        new_out_dim += global_dim # the GSE size
+        new_out_dim = 0
+        if not self.flag_noTPE: new_out_dim += hidden_dim # the TPE size
+        if not self.flag_noFSE: new_out_dim += hidden_dim+ self.probinfo_dim if not self.use_pathgnn else gnn_outdim+ self.probinfo_dim # FSE
+
 
 
         if self.flag_transformer in [1, 2, 3]:
