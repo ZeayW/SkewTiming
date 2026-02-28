@@ -211,7 +211,7 @@ def init_model(options):
                 flag_noTPE=options.flag_noTPE,
                 flag_residual=options.flag_residual,
                 use_pathgnn = options.use_pathgnn,
-                path_feat_ßchoice=options.path_feat_choice,
+                path_feat_choice=options.path_feat_choice,
                 path_corr_choice = options.path_corr_choice,
                 path_delay_choice= options.path_delay_choice,
                 base_pe=base_pe,
