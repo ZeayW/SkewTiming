@@ -263,6 +263,8 @@ class BPN(nn.Module):
                  attn_choice=1,
                  alpha=10,
                  beta=10,
+                 flag_noTPE = False,
+                 flag_noFSE = False,
                  flag_residual=False,
                  use_pathgnn=True,
                  path_feat_choice=0,
@@ -284,9 +286,10 @@ class BPN(nn.Module):
                  ):
         super(BPN, self).__init__()
 
+        self.flag_noTPE = flag_noTPE
+        self.flag_noFSE = flag_noFSE
+
         self.device = device
-        self.global_cat_choice = global_cat_choice
-        self.global_info_choice = global_info_choice
         self.flag_gt = flag_gt
         self.flag_transformer = flag_transformer
         self.flag_residual = flag_residual
@@ -355,71 +358,40 @@ class BPN(nn.Module):
 
         if self.path_delay_choice in [1,2,3]:
            self.linear_delay = nn.Linear(1,tf_dim)
+        # if self.path_delay_choice in [3]:
+        #     self.linear_delay = nn.Linear(1, 32)
+
 
 
         if self.flag_gt:
             self.pathgformer = PathGraphFormer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=2, d_ff=128,
                                                use_corr_pe=use_corr_pe, use_corr_bias=use_attn_bias)
 
-        if self.global_cat_choice == 8: self.mlp_w = MLP(hidden_dim, int(hidden_dim / 2), 1)
-        if self.global_cat_choice in [9, 11, 12, 13, 15]:
-            self.mlp_w2 = MLP(1, hidden_dim, 1)
-            self.mlp_w3 = MLP(1, hidden_dim, 1)
-        if self.global_cat_choice in [10, 14, 16, 18, 19, 23, 25]:
-            self.mlp_w2 = MLP(2, hidden_dim, 1)
-            self.mlp_w3 = MLP(2, hidden_dim, 1)
-        if self.global_cat_choice in [17, 20, 24]: self.mlp_w2 = MLP(3, hidden_dim, 1)
-        if self.global_cat_choice in [21]: self.mlp_w2 = MLP(4, hidden_dim, 1)
+        self.mlp_w2 = MLP(2, hidden_dim, 1)
+        self.mlp_w3 = MLP(2, hidden_dim, 1)
 
         self.probinfo_dim = 32
-        if self.global_info_choice in [11, 12, 23, 24, 25]: self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
-        if self.global_info_choice in [13, 16, 17, 19, 20]: self.mlp_probinfo = MLP(2, hidden_dim, self.probinfo_dim)
-        if self.global_info_choice in [21]: self.mlp_probinfo = MLP(3, hidden_dim, self.probinfo_dim)
-        if self.global_info_choice in [22]: self.mlp_probinfo = MLP(1, hidden_dim, hidden_dim)
+        self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
 
-        if self.global_info_choice in [15]:
-            self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
-            self.mlp_Wglobal = MLP(1, hidden_dim, 1)
-            self.mlp_Wpi = MLP(1, hidden_dim, 1)
-        if self.global_info_choice in [18]:
-            self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
-            self.mlp_Wglobal = MLP(1, hidden_dim, 1)
-        if self.global_info_choice in [24, 25]:
-            self.mlp_global = MLP(infeat_dim1 + infeat_dim2, hidden_dim, hidden_dim)
+        new_out_dim = hidden_dim # the TPE size
+        global_dim = hidden_dim+ self.probinfo_dim if not self.use_pathgnn else gnn_outdim+ self.probinfo_dim
+        new_out_dim += global_dim # the GSE size
 
-        new_out_dim = 0
-        global_dim = hidden_dim if not self.use_pathgnn else gnn_outdim
-        if self.global_info_choice in [0, 1, 22]:
-            new_out_dim += self.hidden_dim
-        elif self.global_info_choice == 2:
-            new_out_dim += 2 * self.hidden_dim
-        elif self.global_info_choice in [3, 4, 5, 7]:
-            new_out_dim += self.hidden_dim + 1
-        elif self.global_info_choice in [6, 9]:
-            new_out_dim += self.hidden_dim + 2
-        elif self.global_info_choice in [8, 10]:
-            new_out_dim += 2 * global_dim + 1
-        elif self.global_info_choice in [11, 13, 14, 15, 16, 17]:
-            new_out_dim += 2 * global_dim + self.probinfo_dim
-        elif self.global_info_choice in [12, 18, 19, 20, 21, 24, 25]:
-            new_out_dim += global_dim + self.probinfo_dim
-        elif self.global_info_choice in [23]:
-            new_out_dim += self.probinfo_dim
-        if self.global_cat_choice in [0, 3, 4]:
-            new_out_dim += 1
-        elif self.global_cat_choice in [1, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]:
-            new_out_dim += self.hidden_dim
-        if self.path_delay_choice in [3]:
-            new_out_dim += tf_dim
-        elif self.path_delay_choice in [6,7]:
-            new_out_dim += 1
 
         if self.flag_transformer in [1, 2, 3]:
-            if self.global_cat_choice != 25: new_out_dim += tf_dim
+            new_out_dim += tf_dim
         elif self.flag_transformer in [4]:
-            if self.global_cat_choice != 25: new_out_dim += 2 * tf_dim
+            new_out_dim += 2 * tf_dim
         if self.flag_gt:
             new_out_dim += hidden_dim
+
+        # if self.path_delay_choice in [3]:
+        #     new_out_dim += 32
+
+        if self.path_delay_choice in [3]:
+            new_out_dim += tf_dim
+        elif self.path_delay_choice in [6, 7]:
+            new_out_dim += 1
 
         if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1,
                                                     negative_slope=0.1)
@@ -455,12 +427,6 @@ class BPN(nn.Module):
         if self.flag_delay:
             neigh_dim_g += 1
             neigh_dim_m += 1
-        # feat_outdim_m = 32
-        # feat_outdim_g = 32
-        # neigh_dim_m = self.hidden_dim + feat_outdim_m
-        # neigh_dim_g = self.hidden_dim + feat_outdim_g
-        # self.linear_feat_module = th.nn.Linear(feat_dim_m,feat_outdim_m)
-        # self.linear_feat_gate = th.nn.Linear(feat_dim_g, feat_outdim_g)
 
         self.mlp_neigh_module = MLP(neigh_dim_m, int(hidden_dim / 2), hidden_dim)
         self.mlp_neigh_gate = MLP(neigh_dim_g, int(hidden_dim / 2), hidden_dim)
@@ -471,10 +437,6 @@ class BPN(nn.Module):
         atnn_dim_g = hidden_dim
         self.attention_vector_g = nn.Parameter(th.randn(atnn_dim_g, 1), requires_grad=True)
         self.attention_vector_m = nn.Parameter(th.randn(atnn_dim_m, 1), requires_grad=True)
-
-        # self.linear_neigh_gate = self.linear_neigh_module
-        # self.mlp_neigh_gate = self.mlp_neigh_module
-        # self.attention_vector_g = self.attention_vector_m
 
         self.mlp_out = MLP(out_dim, hidden_dim, 1)
         self.activation = th.nn.LeakyReLU(negative_slope=0)
@@ -514,7 +476,6 @@ class BPN(nn.Module):
         if self.flag_width:
             h_dst = th.cat((h_dst, edges.dst['width2']), dim=1)
 
-        # h_dst = self.linear_feat_module(h_dst)
 
         z = th.cat((edges.src['h'], h_dst), dim=1)
         if self.flag_delay:
@@ -682,7 +643,6 @@ class BPN(nn.Module):
         h = self.activation(h)
         # mask = nodes.data['is_po'].squeeze() != 1
         # h[mask] = self.activation(h[mask])
-
         return {'h': h}
 
     def reduce_func_prob(self, nodes):
@@ -872,9 +832,6 @@ class BPN(nn.Module):
                     critical_mask = critical_mask & has_true
                     graph.ndata['is_critical'][nodes] = th.transpose(critical_mask, 0, 1)
 
-                if th.sum(critical_mask) == 0:
-                    break
-
 
                 nodes_feat_l = feat_p[nodes]
                 path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
@@ -1014,8 +971,11 @@ class BPN(nn.Module):
                                                            self.reduce_func_delay_m, etype='intra_module')
 
             h_gnn = graph.ndata['h'][PO_mask]
-            h = h_gnn
-            rst = self.mlp_out(h_gnn)
+
+            h = None if self.flag_noTPE else h_gnn
+
+            rst = None
+            #rst = self.mlp_out(h_gnn)
 
             prob_sum, prob_dev, prob_ce = th.tensor([0.0]), th.tensor([0.0]), th.tensor([0.0])
             POs_criticalprob = None
@@ -1041,7 +1001,7 @@ class BPN(nn.Module):
                     nodes_prob = self.prop_backward(graph, graph_info)
 
 
-                if self.flag_path_supervise or self.global_cat_choice in [3, 4, 5, 7]:
+                if self.flag_path_supervise :
                     graph.ndata['hp'] = nodes_prob
                     graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(self.device)
                     graph.ndata['id'][POs] = th.tensor(range(len(POs)), dtype=th.int64).unsqueeze(-1).to(self.device)
@@ -1063,250 +1023,21 @@ class BPN(nn.Module):
 
                 graph_info['PO2node_prob'] = nodes_prob_tr
 
+                if not self.flag_noFSE:
+                    h_global = th.matmul(nodes_prob_tr, graph_info['nodes_emb'])
 
-                h_global = th.matmul(nodes_prob_tr, graph_info['nodes_emb'])
-
-                path_emb, path_lengths, path_inputdelay = None,None,None
-                # h_global2 = th.matmul(nodes_prob_tr, graph.ndata['h'])
-                # print(h_global.shape,h_global2.shape)
-
-                if self.global_info_choice in [2,8,10,11, 13, 14, 15, 16, 17]:
-                    h_pi = th.matmul(PIs_prob, graph_info['nodes_emb'][PIs_mask])
-                elif self.global_info_choice in [3,6,8]:
-                    h_pi = th.matmul(PIs_prob, graph.ndata['delay'][PIs_mask])
-                else:
-                    h_pi = None
-
-                if self.global_info_choice == 2:
-                    h_global = th.cat((h_global, h_pi), dim=1)
-                elif self.global_info_choice in [3]:
-                    h_global = th.cat((h_global, h_pi), dim=1)
-                elif self.global_info_choice in [4]:
-                    nodes_delay, nodes_inputDelay = self.prop_delay(graph, graph_info)
-                    h_d = nodes_inputDelay[POs]
-                    h_global = th.cat((h_global, h_d), dim=1)
-                elif self.global_info_choice == 5:
-                    nodes_delay, nodes_inputDelay = self.prop_delay(graph, graph_info)
-                    h_d = th.matmul(nodes_prob_tr, nodes_inputDelay)
-                    h_global = th.cat((h_global, h_d), dim=1)
-                elif self.global_info_choice == 6:
-                    nodes_delay, nodes_inputDelay = self.prop_delay(graph, graph_info)
-                    h_d = nodes_inputDelay[POs]
-                    h_global = th.cat((h_global, h_d, h_pi), dim=1)
-                elif self.global_info_choice == 7:
-                    maxPI_idx = th.argmax(PIs_prob, dim=1)
-                    maxPI_delay = graph.ndata['delay'][PIs_mask][maxPI_idx]
-                    h_global = th.cat((h_global, maxPI_delay), dim=1)
-
-                elif self.global_info_choice == 8:
-                    maxPI_idx = th.argmax(PIs_prob, dim=1)
-                    maxPI_delay = graph.ndata['delay'][PIs_mask][maxPI_idx]
-                    h_global = th.cat((h_global, h_pi, maxPI_delay), dim=1)
-
-                elif self.global_info_choice == 9:
-                    maxPI_idx = th.argmax(PIs_prob, dim=1)
-                    maxPI_delay = graph.ndata['delay'][PIs_mask][maxPI_idx]
-                    nodes_delay, nodes_inputDelay = self.prop_delay(graph, graph_info)
-                    h_d = nodes_inputDelay[POs]
-                    h_global = th.cat((h_global, h_d, maxPI_delay), dim=1)
-                elif self.global_info_choice == 10:
-                    h_etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    h_global = th.cat((h_global, h_pi, h_etp), dim=1)
-                elif self.global_info_choice == 11:
-                    h_etp = self.mlp_probinfo(
-                        -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
-                    h_global = th.cat((h_global, h_pi, h_etp), dim=1)
-                elif self.global_info_choice in [12]:
-                    h_etp = self.mlp_probinfo(
-                        -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
-                    h_global = th.cat((h_global, h_etp), dim=1)
-                elif self.global_info_choice == 13:
-
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    top2, _ = nodes_prob_tr.topk(2, dim=1)
-                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
-                    h_prob = self.mlp_probinfo(th.cat((etp, top2diff), dim=1))
-
-                    h_global = th.cat((h_global, h_pi, h_prob), dim=1)
-                elif self.global_info_choice == 14:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    top2, _ = nodes_prob_tr.topk(2, dim=1)
-                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
-                    h_prob = self.mlp_probinfo(th.cat((etp, top2diff), dim=1))
-                    h_global = th.cat((h_global, h_pi, h_prob), dim=1)
-                elif self.global_info_choice == 15:
-                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    w_global = self.mlp_Wglobal(etp_all)
-                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    w_pi = self.mlp_Wpi(etp_pi)
-                    h_prob = self.mlp_probinfo(etp_all)
-
-                    h_global = th.cat((w_global * h_global, w_pi * h_pi, h_prob), dim=1)
-                elif self.global_info_choice == 16:
-                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    h_prob = self.mlp_probinfo(th.cat((etp_all, etp_pi), dim=1))
-
-                    h_global = th.cat((h_global, h_pi, h_prob), dim=1)
-                elif self.global_info_choice == 17:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    fanin_size = th.sum(th.sign(nodes_prob_tr), dim=1).unsqueeze(1)
-                    prob_sum = th.sum(nodes_prob_tr, dim=1).unsqueeze(1)
-                    prob_mean = prob_sum / fanin_size
-                    h_prob = self.mlp_probinfo(th.cat((etp, prob_mean), dim=1))
-
-                    h_global = th.cat((h_global, h_pi, h_prob), dim=1)
-                elif self.global_info_choice == 18:
-                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    w_global = self.mlp_Wglobal(etp_all)
-                    h_prob = self.mlp_probinfo(etp_all)
-                    h_global = th.cat((w_global * h_global, h_prob), dim=1)
-                elif self.global_info_choice == 19:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    top2, _ = nodes_prob_tr.topk(2, dim=1)
-                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
-                    h_prob = self.mlp_probinfo(th.cat((etp, top2diff), dim=1))
-                    h_global = th.cat((h_global, h_prob), dim=1)
-                elif self.global_info_choice == 20:
-                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    h_prob = self.mlp_probinfo(th.cat((etp_all, etp_pi), dim=1))
-                    h_global = th.cat((h_global, h_prob), dim=1)
-                elif self.global_info_choice == 21:
-                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    top2, _ = nodes_prob_tr.topk(2, dim=1)
-                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
-                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    h_prob = self.mlp_probinfo(th.cat((etp_all, top2diff, etp_pi), dim=1))
-                    h_global = th.cat((h_global, h_prob), dim=1)
-                elif self.global_info_choice == 22:
-                    h_etp = self.mlp_probinfo(
-                        -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
-                    h_global = h_global + h_etp
-                elif self.global_info_choice == 23:
-                    h_etp = self.mlp_probinfo(
-                        -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
-                    h_global = h_etp
-                elif self.global_info_choice in [24, 25]:
+                    path_emb, path_lengths, path_inputdelay = None,None,None
+                    # h_global2 = th.matmul(nodes_prob_tr, graph.ndata['h'])
+                    # print(h_global.shape,h_global2.shape)
                     h_etp = self.mlp_probinfo(
                         -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
                     h_global = th.cat((h_global, h_etp), dim=1)
 
+                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
+                    w = self.mlp_w2(th.cat((etp, minmax), dim=1))
+                    h = th.cat((h, w * h_global), dim=1) if h is not None else w*h_global
 
-                if self.global_cat_choice == 0:
-                    h = th.cat((rst, h_global), dim=1)
-                elif self.global_cat_choice == 1:
-                    h = th.cat((h, h_global), dim=1)
-                elif self.global_cat_choice == 2:
-                    h = h_global
-                elif self.global_cat_choice == 3:
-                    h = th.cat((rst, (1 - prob_sum) * h_global), dim=1)
-                elif self.global_cat_choice == 4:
-                    h = th.cat((rst, self.mlp_w(1 - prob_sum) * h_global), dim=1)
-                elif self.global_cat_choice == 5:
-                    h = th.cat((h, (1 - prob_sum) * h_global), dim=1)
-                elif self.global_cat_choice == 6:
-                    h = th.cat((h, self.mlp_w(1 - prob_sum) * h_global), dim=1)
-                elif self.global_cat_choice == 7:
-                    prob_max = th.max(nodes_prob_tr, dim=1).values.unsqueeze(1)
-                    h = th.cat((h, (1 - prob_max) * h_global), dim=1)
-                elif self.global_cat_choice == 8:
-                    w = self.mlp_w(h)
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 9:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    w = self.mlp_w2(etp)
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 10:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp, minmax), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 11:
-                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
-                    w = self.mlp_w2(minmax)
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 12:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    w = th.sigmoid(self.mlp_w2(etp))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 13:
-                    etp = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    w = self.mlp_w2(etp)
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 14:
-                    etp = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    minmax = (th.max(PIs_prob, dim=1).values - th.min(PIs_prob, dim=1).values).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp, minmax), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 15:
-                    minmax = (th.max(PIs_prob, dim=1).values - th.min(PIs_prob, dim=1).values).unsqueeze(1)
-                    w = self.mlp_w2(minmax)
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 16:
-                    etp = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    top2, _ = PIs_prob.topk(2, dim=1)
-                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp, top2diff), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 17:
-                    etp = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    minmax = (th.max(PIs_prob, dim=1).values - th.min(PIs_prob, dim=1).values).unsqueeze(1)
-                    top2, _ = PIs_prob.topk(2, dim=1)
-                    top2diff = top2[:, 0] - top2[:, 1]
-                    w = self.mlp_w2(th.cat((etp, minmax, top2diff), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 18:
-                    fanin_size = th.sum(th.sign(nodes_prob_tr), dim=1).unsqueeze(1)
-                    drivepi_num = th.sum(th.sign(PIs_prob), dim=1).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((fanin_size, drivepi_num), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 19:
-                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp_all, etp_pi), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 20:
-                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    top2, _ = PIs_prob.topk(2, dim=1)
-                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp_all, etp_pi, top2diff), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 21:
-                    etp_all = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
-                    etp_pi = -th.sum(PIs_prob * th.log(PIs_prob + 1e-10), dim=1).unsqueeze(1)
-                    top2, _ = PIs_prob.topk(2, dim=1)
-                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp_all, minmax, etp_pi, top2diff), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 22:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
-
-                    PIs_delay = nodes.ndata['delay'][PIs_mask]
-                    mask = PIs_prob > 0
-                    w = self.mlp_w2(th.cat((etp, minmax), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 23:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    top2, _ = nodes_prob_tr.topk(2, dim=1)
-                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp, top2diff), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 24:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
-                    top2, _ = nodes_prob_tr.topk(2, dim=1)
-                    top2diff = (top2[:, 0] - top2[:, 1]).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp, minmax, top2diff), dim=1))
-                    h = th.cat((h, w * h_global), dim=1)
-                elif self.global_cat_choice == 25:
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp, minmax), dim=1))
-                    h = h + w * h_global
 
                 if self.flag_transformer !=0:
 
@@ -1326,14 +1057,7 @@ class BPN(nn.Module):
                     else:
                         h_pathW = path_emb
 
-                    if self.flag_transformer ==1:
-                        h = th.cat((h, h_pathW), dim=1)
-                    elif self.flag_transformer == 2:
-                        h = th.cat((h, h_path), dim=1)
-                    elif self.flag_transformer == 3:
-                        h = th.cat((h, h_pathW + h_path), dim=1)
-                    elif self.flag_transformer == 4:
-                        h = th.cat((h, h_pathW, h_path), dim=1)
+                    h = th.cat((h, h_pathW), dim=1)
 
                 rst = self.mlp_out_new(h)
 
@@ -1344,14 +1068,9 @@ class BPN(nn.Module):
                     for key,value in metadata.items():
                         metadata[key] = value.reshape((len(value),1))
 
-                    #     print(key,value.shape)
-                    #     print(value)
-                    # exit()
                 return rst, rst_residual,path_inputdelay,prob_sum, prob_dev, prob_ce, POs_criticalprob,metadata
 
             return rst,  rst_residual,path_inputdelay,prob_sum, prob_dev, prob_ce, POs_criticalprob,metadata
-
-
 
 
 class ACCNN(nn.Module):

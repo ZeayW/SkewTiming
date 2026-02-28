@@ -207,9 +207,11 @@ def init_model(options):
                 global_info_choice= options.global_info_choice,
                 alpha = options.alpha,
                 beta = options.beta,
+                flag_noFSE= options.flag_noFSE,
+                flag_noTPE=options.flag_noTPE,
                 flag_residual=options.flag_residual,
                 use_pathgnn = options.use_pathgnn,
-                path_feat_choice=options.path_feat_choice,
+                path_feat_ßchoice=options.path_feat_choice,
                 path_corr_choice = options.path_corr_choice,
                 path_delay_choice= options.path_delay_choice,
                 base_pe=base_pe,
@@ -571,6 +573,7 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
 
                         for key, value in cur_metadata.items():
                             cur_metadata[key] = value.squeeze(1).detach().cpu().numpy().tolist()
+                        cur_metadata['case_idx'] = [j] * len(POs_label)
                         if metadata_all is None:
                             metadata_all = cur_metadata
                         else:
@@ -610,13 +613,14 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
     if flag_group:
         labels_hat_all, labels_all = None, None
         batch_sizes = [64, 32, 17, 8]
-        batch_sizes = [8, 32]
+        batch_sizes = [16, 32]
         if len(test_data)!=2:
             batch_sizes = [1]*len(test_data)
         r2_list  = []
         mape_list = []
         for i, (name, data) in enumerate(test_data.items()):
             #torch.cuda.empty_cache()
+
 
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
@@ -783,8 +787,8 @@ def train(model):
                             train_loss += 0.5*Loss(labels_hat_residual, POs_label-path_inputdelay)
                             #print(th.cat((labels_hat_residual+path_inputdelay-labels_hat,labels_hat-POs_label),dim=1))
                         #train_loss = th.mean((th.exp(1 - path_loss)) * th.pow(labels_hat - POs_label,2))
-
-
+                    # if options.flag_residual:
+                    #     train_loss += Loss(labels_hat_residual, POs_label - path_inputdelay)
                     num_POs += len(prob_sum)
 
                     totoal_path_loss += th.mean(path_loss).item()*len(prob_sum)
@@ -822,7 +826,7 @@ def train(model):
             save_path = '../checkpoints/{}'.format(options.checkpoint)
             th.save(model.state_dict(), os.path.join(save_path,"{}.pth".format(epoch)))
             with open(os.path.join(checkpoint_path,'res.txt'),'a') as f:
-                f.write('Epoch {}, val: {:.3f},{:.3f}; test:{:.3f},{:.3f}\n'.format(epoch,val_r2,val_mape,test_r2,test_mape))
+                f.write('Epoch {}, val: {:.3f},{:.3f}; test_all:{:.3f},{:.3f}; test_avg:{:.3f},{:.3f}\n'.format(epoch,val_r2,val_mape,test_r2,test_mape))
 
 
 if __name__ == "__main__":
@@ -880,12 +884,12 @@ if __name__ == "__main__":
             usages = ['test']
             #usages = ['train']
 
-
             for usage in usages:
                 flag_save = True
                 flag_infer = False
                 save_file_dir = options.checkpoint
                 test_data = load_data(usage,options)
+
                 if len(test_data)==0:
                     continue
                 #test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = test(model, test_data,options.flag_reverse)
