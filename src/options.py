@@ -5,6 +5,8 @@ def get_options(args=None):
     parser.add_argument('--alpha', type=float, default=10.0)
     parser.add_argument('--beta', type=float, default=10.0)
     parser.add_argument('--base_pe', type=int, default=1)
+    parser.add_argument('--log_level', type=int, default=0,
+                        help='0: no runtime/statistics logging; 1: enable runtime breakdown and extra test statistics')
     parser.add_argument('--flag_noTPE', action='store_true')
     parser.add_argument('--flag_noFSE', action='store_true')
     parser.add_argument('--use_corr_pe',action='store_true')

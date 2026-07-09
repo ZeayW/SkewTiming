@@ -3,6 +3,40 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Project-local generated or non-source files
+src/abandon/
+src/scripts/
+src/utils/
+
+figs/
+src/figs/
+**/figs/
+**/figss/
+
+*.xlsx
+*.xlsm
+~$*.xlsx
+~$*.xlsm
+*.csv
+*.CSV
+
+*.zip
+
+checkpoints/
+checkpoint/
+datasets/
+data/
+runs/
+wandb/
+*.pt
+*.pth
+*.pkl
+*.npz
+*.npy
+*.ckpt
+
+
+src_bk/
 
 #idea
 .idea/

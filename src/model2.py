@@ -2,7 +2,6 @@
 import dgl
 import torch as th
 from torch import nn
-from dgl import function as fn
 
 from utils import *
 from options import get_options
@@ -16,6 +15,7 @@ from transformer import PathTransformer
 # from pathformer import *
 #from pathformer2 import *
 from pathformer4 import *
+from time import time
 
 # from transformer import *
 options = get_options()
@@ -652,10 +652,19 @@ class BPN(nn.Module):
         # prob_max = th.max(nodes.mailbox['mp'],dim=1).values
         prob_mean = th.mean(nodes.mailbox['mp'], dim=1).unsqueeze(1)
         prob_dev = th.sum(th.abs(nodes.mailbox['mp'] - prob_mean), dim=1)
+
         # print(nodes.mailbox['mw'].shape,nodes.mailbox['mp'].shape)
         prob_target = th.softmax(nodes.mailbox['mw'], dim=1).reshape(nodes.mailbox['mp'].shape)
         # print(prob_target)
+        #prob_dev = F.cosine_similarity(prob_target,nodes.mailbox['mp'],dim=1)
         prob_ce = th.sum(prob_target * th.log(prob_target / (nodes.mailbox['mp'] + 1e-10)), dim=1)
+
+        mask = prob_target
+        prob_dev = F.cosine_similarity(prob_target,nodes.mailbox['mp'],dim=1)
+        #prob_dev = F.kl_div(th.log_softmax(nodes.mailbox['mp'],dim=0),prob_target,reduction='none').sum(dim=1)
+
+        # print(prob_target,nodes.mailbox['mp'])
+        #print(prob_dev)
 
         # union_prob = 1 / nodes.mailbox['mp'].shape[1]
         #
@@ -664,7 +673,7 @@ class BPN(nn.Module):
         # print(nodes.mailbox['mp'].shape,union_prob)
         # print(prob_dev,prob_ce)
         # exit()
-        # prob_dev = th.sum(nodes.mailbox['mp']*th.log(nodes.mailbox['mp']+1e-10),dim=1)
+        #prob_dev = th.sum(nodes.mailbox['mp']*th.log(nodes.mailbox['mp']+1e-10),dim=1)
 
         # prob_dev = th.sum(th.pow(nodes.mailbox['ml'] - prob_mean,2), dim=1)
 
@@ -758,9 +767,11 @@ class BPN(nn.Module):
         return graph.ndata['hp'], ep_path_emb
 
 
-    def path_embedding(self, graph, graph_info):
+    def path_embedding(self, graph, graph_info, stage_time=None):
 
-
+        timed = stage_time is not None
+        if timed:
+            start = time()
         if self.use_pathgnn:
             feat_p = graph_info['nodes_emb']
             #feat_p = self.gnn_pathfeat(graph,feat_p)
@@ -797,6 +808,8 @@ class BPN(nn.Module):
                                   device=graph.device)  # fill per-path valid region only
             c_sink = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)
             c_sink[:, 0] = 1
+        if timed:
+            stage_time['CPE_preparefeat'] += time() - start
 
         with th.no_grad():
             #graph.ndata['hp'] = graph_info['nodes_prob']
@@ -806,6 +819,8 @@ class BPN(nn.Module):
             l = 0
 
             while True:
+                if timed:
+                    start = time()
                 if len(pre_nodes) !=0:
                     graph.pull(pre_nodes, fn.copy_u('hp', 'p'), self.reduce_func_maxprob, etype='forward')
 
@@ -819,6 +834,8 @@ class BPN(nn.Module):
                 is_ended_mask = th.logical_and(th.sum(critical_mask, dim=1) == 0, ~is_ended)
                 is_ended[is_ended_mask] = True
                 path_lengths[is_ended_mask] = l + 1
+                if timed:
+                    stage_time['CPE_pathfind'] += time() - start
 
                 if th.sum(critical_mask) == 0:
                     break
@@ -833,7 +850,8 @@ class BPN(nn.Module):
                     critical_mask = critical_mask & has_true
                     graph.ndata['is_critical'][nodes] = th.transpose(critical_mask, 0, 1)
 
-
+                if timed:
+                    start = time()
                 nodes_feat_l = feat_p[nodes]
                 path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
                 num_critical = th.sum(critical_mask, dim=1, keepdim=True)
@@ -886,32 +904,49 @@ class BPN(nn.Module):
                     cl = cl.diagonal()
                     c_local[:, l + 1] = cl
 
+                if timed:
+                    stage_time['CPE_preparefeat'] += time() - start
+                    start = time()
                 filtered_mask = th.sum(graph.ndata['is_critical'][nodes], dim=1) >= 1
                 #pre_nodes = nodes
                 pre_nodes = nodes[filtered_mask]
                 _, nodes = graph.out_edges(pre_nodes, etype='reverse')
                 nodes = th.unique(nodes)
                 l += 1
+                if timed:
+                    stage_time['CPE_pathfind'] += time() - start
 
         if self.use_corr_pe or self.use_corr_bias:
+            if timed:
+                start = time()
             c_sink = c_sink[:, :l + 1]
             c_local = c_local[:, :l + 1]
             #input_delay =  path_inputdelay if self.path_delay_choice == 0 else None
             path_emb = self.pathformer(path_feat, path_lengths, c_sink=c_sink, c_local=c_local)
+            if timed:
+                stage_time['CPE_encode'] += time() - start
 
         else:
+            if timed:
+                start = time()
             path_emb = self.pathformer(path_feat, path_lengths)
+            if timed:
+                stage_time['CPE_encode'] += time() - start
 
 
         return path_emb, path_lengths,path_inputdelay
         # return graph.ndata['hp'], graph.ndata['hd']
 
-    def forward(self, graph, graph_info,flag_meta=False):
+    def forward(self, graph, graph_info,flag_meta=False,stage_time=None):
+        timed = stage_time is not None
 
         topo = graph_info['topo']
         PO_mask = graph_info['POs']
 
         with (graph.local_scope()):
+            # stage 1: MDTE
+            if timed:
+                start = time()
             graph.edges['intra_module'].data['bit_position'] = graph.edges['intra_module'].data[
                 'bit_position'].unsqueeze(1)
 
@@ -971,7 +1006,10 @@ class BPN(nn.Module):
                             if self.flag_delay: graph.pull(nodes_module, self.message_func_delay,
                                                            self.reduce_func_delay_m, etype='intra_module')
 
+
             h_gnn = graph.ndata['h'][PO_mask]
+            if timed:
+                stage_time['MTDE_forward'] += time() - start
 
             h = None if self.flag_noTPE else h_gnn
 
@@ -984,25 +1022,32 @@ class BPN(nn.Module):
             metadata = None
 
             if self.flag_reverse or self.flag_path_supervise:
-
+                if timed:
+                    start = time()
                 if self.use_pathgnn:
-                    gnn_input = th.cat((graph.ndata['feat'],graph.ndata['degree']),dim=1) if self.flag_degree else graph.ndata['feat']
-                    #gnn_input = graph.ndata['feat']
+                    gnn_input = th.cat((graph.ndata['feat'], graph.ndata['degree']), dim=1) if self.flag_degree else \
+                    graph.ndata['feat']
+                    # gnn_input = graph.ndata['feat']
                     graph_info['nodes_emb'] = self.gnn_pathfeat(graph, gnn_input)
                 else:
                     graph_info['nodes_emb'] = graph.ndata['h']
+                if timed:
+                    stage_time['FSE'] += time() - start
 
                 POs_criticalprob = None
                 POs = graph_info['POs']
                 h_path = None
 
+                if timed:
+                    start = time()
                 if self.flag_transformer in [2, 3, 4]:
                     nodes_prob, h_path = self.prop_backward_new(graph, graph_info)
                 else:
                     nodes_prob = self.prop_backward(graph, graph_info)
+                if timed:
+                    stage_time['MTDE_backward'] += time() - start
 
-
-                if self.flag_path_supervise :
+                if self.flag_path_supervise:
                     graph.ndata['hp'] = nodes_prob
                     graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(self.device)
                     graph.ndata['id'][POs] = th.tensor(range(len(POs)), dtype=th.int64).unsqueeze(-1).to(self.device)
@@ -1013,10 +1058,12 @@ class BPN(nn.Module):
                     prob_ce = graph.ndata['prob_ce'][POs]
 
                 if not self.flag_reverse:
-                    return rst, rst_residual, path_inputdelay, prob_sum, prob_dev, prob_ce, POs_criticalprob,metadata
+                    output = (rst, rst_residual, path_inputdelay, prob_sum, prob_dev, prob_ce, POs_criticalprob, metadata)
+                    return output + (stage_time,) if timed else output
 
-
-
+                # stage 2: generate the FSE
+                if timed:
+                    start = time()
                 PIs_mask = graph.ndata['is_pi'] == 1
                 PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
 
@@ -1027,7 +1074,7 @@ class BPN(nn.Module):
                 if not self.flag_noFSE:
                     h_global = th.matmul(nodes_prob_tr, graph_info['nodes_emb'])
 
-                    path_emb, path_lengths, path_inputdelay = None,None,None
+                    path_emb, path_lengths, path_inputdelay = None, None, None
                     # h_global2 = th.matmul(nodes_prob_tr, graph.ndata['h'])
                     # print(h_global.shape,h_global2.shape)
                     h_etp = self.mlp_probinfo(
@@ -1037,16 +1084,18 @@ class BPN(nn.Module):
                     etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
                     minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
                     w = self.mlp_w2(th.cat((etp, minmax), dim=1))
-                    h = th.cat((h, w * h_global), dim=1) if h is not None else w*h_global
+                    h = th.cat((h, w * h_global), dim=1) if h is not None else w * h_global
+                if timed:
+                    stage_time['FSE'] += time() - start
 
-
-                if self.flag_transformer !=0:
-
-                    path_emb, path_lengths,path_inputdelay = self.path_embedding(graph, graph_info)
+                # stage 3: generate CPE
+                if self.flag_transformer != 0:
+                    path_emb, path_lengths, path_inputdelay = self.path_embedding(graph, graph_info, stage_time if timed else None)
                     if self.flag_residual:
                         rst_residual = self.mlp_out_residual(path_emb)
 
-                    delay_emb = self.linear_delay(path_inputdelay) if self.path_delay_choice in [1, 2,3] else path_inputdelay
+                    delay_emb = self.linear_delay(path_inputdelay) if self.path_delay_choice in [1, 2,
+                                                                                                 3] else path_inputdelay
                     if self.path_delay_choice in [1, 4]:
                         h_pathW = path_emb + delay_emb
                     elif self.path_delay_choice in [2, 5]:
@@ -1054,25 +1103,31 @@ class BPN(nn.Module):
                     elif self.path_delay_choice in [3, 6]:
                         h_pathW = th.cat((path_emb, delay_emb), dim=1)
                     elif self.path_delay_choice in [7]:
-                        h_pathW = th.cat((path_emb, rst_residual+path_inputdelay), dim=1)
+                        h_pathW = th.cat((path_emb, rst_residual + path_inputdelay), dim=1)
                     else:
                         h_pathW = path_emb
 
                     h = th.cat((h, h_pathW), dim=1)
 
+                # stage 4: projection
+                if timed:
+                    start = time()
                 rst = self.mlp_out_new(h)
+                if timed:
+                    stage_time['proj'] += time() - start
 
                 if flag_meta:
-                    metadata = extract_endpoint_metadata(graph,nodes_prob,PIs_mask)
+                    metadata = extract_endpoint_metadata(graph, nodes_prob, PIs_mask)
                     metadata['critical_input_arrival'] = path_inputdelay.squeeze(1)
                     metadata['critical_path_length'] = path_lengths
-                    for key,value in metadata.items():
-                        metadata[key] = value.reshape((len(value),1))
+                    for key, value in metadata.items():
+                        metadata[key] = value.reshape((len(value), 1))
 
-                return rst, rst_residual,path_inputdelay,prob_sum, prob_dev, prob_ce, POs_criticalprob,metadata
+                output = (rst, rst_residual, path_inputdelay, prob_sum, prob_dev, prob_ce, POs_criticalprob, metadata)
+                return output + (stage_time,) if timed else output
 
-            return rst,  rst_residual,path_inputdelay,prob_sum, prob_dev, prob_ce, POs_criticalprob,metadata
-
+            output = (rst, rst_residual, path_inputdelay, prob_sum, prob_dev, prob_ce, POs_criticalprob, metadata)
+            return output + (stage_time,) if timed else output
 
 class ACCNN(nn.Module):
 

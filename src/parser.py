@@ -7,6 +7,7 @@ from random import shuffle
 import tee
 from utils import *
 from queue import Queue
+from time import time
 
 options = get_options()
 rawdata_path = options.rawdata_path
@@ -112,6 +113,7 @@ class Parser:
         if '_case' in self.design_name:
             self.design_name = self.design_name[:self.design_name.rfind('_case')]
         self.flag_log = flag_log
+        self.flag_runtime = getattr(options, 'log_level', 0) >= 1
         self.netlist_file = netlist_file
         self.golden_file = golden_file
         # self.design_path = design_dir
@@ -213,10 +215,14 @@ class Parser:
         # else:
         #     file_path = os.path.join(self.design_path,'{}_case.v'.format(self.design_name))
         # file_path
-
+        runtime = 0
+        if self.flag_runtime:
+            start = time()
         with open(self.netlist_file, 'r') as f:
             content = f.read()
         content = content[content.find('input'):]
+        if self.flag_runtime:
+            runtime += time()-start
 
         # if 'lt2023' in content and 'lt2024' not in content:
         #     error_region = content[content.find('lt2023'):content.find('lt2025')]
@@ -234,6 +240,8 @@ class Parser:
         assign_i2o = {}
         assign_o2i = {}
 
+        if self.flag_runtime:
+            start = time()
         for sentence in content.split(';\n'):
             if len(sentence) == 0 or 'endmodule' in sentence:
                 continue
@@ -431,7 +439,8 @@ class Parser:
                     self.fo2fi[fanout_node] = ('gate', gate_name,fanin_nodes)
                     self.nodes[fanout_node]['ntype'] = gate_type
 
-
+        if self.flag_runtime:
+            runtime += time()-start
         # deal with the constant inputs (1'b0/1) iteratively
         flag_stop = False
         while not flag_stop:
@@ -510,7 +519,8 @@ class Parser:
                         src = buf_o2i[src]
                         if self.nodes[src]['ntype'] == 'not':
                             num_inv += 1
-
+                    if self.flag_runtime:
+                        start = time()
                     # skip connections between register IO
                     if 'reg' in src and src.endswith('_q') and dst.endswith('_d') and src[:src.rfind('_')]==dst[:dst.rfind('_')]:
                         continue
@@ -523,6 +533,8 @@ class Parser:
                     )
                     is_linked[src] = True
                     is_linked[dst] = True
+                    if self.flag_runtime:
+                        runtime += time()-start
 
             # deal with the special condition that the buf output is PO while buf input is PI
             #
@@ -567,10 +579,12 @@ class Parser:
                 self.nodes[dst]['ntype'] = self.nodes[fanout]['ntype']
                 self.nodes[dst]['is_module'] = self.nodes[fanout]['is_module']
 
+
         # deal with the POs that have successors
         # duplicate the PO, the new node is set as non-po
         # break the coonections between PO and successors
         # add connectins between new nod and successors
+
         new_edges = []
         flag_duplicate = {}
         for eid, (src, dst, edict) in enumerate(self.edges):
@@ -608,6 +622,8 @@ class Parser:
 
 
         # construct the graph
+        if self.flag_runtime:
+            start = time()
         src_nodes, dst_nodes = [[],[]],[[],[]]
         graph_info = {}
         node2nid = {}
@@ -682,7 +698,7 @@ class Parser:
         for i, v in enumerate(nodes_value):
             nodes_valueOnehot[i][v] = 1
 
-        # get the src_node list and dst_node lsit
+        # get the src_node list and dst_node list
         for eid, (src, dst, edict) in enumerate(self.edges):
             #print(src,dst)
             if self.flag_log and 'reg' in src and src.endswith('_q') and dst.endswith('_d') and src[:src.rfind('_')] == dst[:dst.rfind('_')]:
@@ -733,6 +749,10 @@ class Parser:
         graph.edges['intra_module'].data['bit_position'] = th.tensor(bit_position, dtype=th.float)
         graph.edges['intra_module'].data['is_inv'] = th.tensor(is_inv[1], dtype=th.float)
         graph.edges['intra_gate'].data['is_inv'] = th.tensor(is_inv[0], dtype=th.float)
+
+        if self.flag_runtime:
+            runtime += time() - start
+            print('Runtime for {}:'.format(self.design_name),runtime)
 
         if self.flag_log:
             print('\t pre-filter: #node:{}, #edges:{}, {}'.format(graph.number_of_nodes(),
@@ -877,6 +897,7 @@ class Parser:
         if self.flag_log:
             print('\t post-filter: #node:{}, #edges:{}, {}'.format(graph.number_of_nodes(),graph.number_of_edges('intra_gate'),graph.number_of_edges('intra_module')))
             print('\t #PO:{}'.format(len(POs_name)))
+
         # print(POs_name)
         # exit()
         # print('\t',graph_info)

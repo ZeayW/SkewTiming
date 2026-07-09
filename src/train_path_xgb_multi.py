@@ -89,17 +89,26 @@ def gather_data(data,index,flag_train):
         feat_global = []
         feat_global.append(critical_path_info['rank'])
         # feat_global.append(critical_path_info['rank_ratio'])
-        # feat_global.append(rand_paths_info['num_nodes'])
-        # feat_global.append(rand_paths_info['num_seq'])
-        # feat_global.append(rand_paths_info['num_cmb'])
+        feat_global.append(rand_paths_info['num_nodes'])
+        feat_global.append(rand_paths_info['num_seq'])
+        feat_global.append(rand_paths_info['num_cmb'])
         feat_global.append(rand_paths_info['num_reg'])
 
         paths_info = [critical_path_info]
 
         if not flag_train:
-            paths_info.extend(rand_paths_info['paths_rd'][:50])
+            #paths_info.extend(rand_paths_info['paths_rd'][:50])
+            if data['design_name']in ['ecg', 'y_quantizer', 'y_huff']:
+                pass
+                # if len(critical_path_info['path']) > 10:
+                #     paths_info.extend(rand_paths_info['paths_rd'][:5])
+
+            else:
+                paths_info.extend(rand_paths_info['paths_rd'][:5])
             # if len(critical_path_info['path'])>5:
             #     paths_info.extend(rand_paths_info['paths_rd'][:10])
+
+
 
         # if len(paths_info)>5:
         #     print(data['design_name'],len(paths_info))
@@ -159,6 +168,7 @@ def load_data(usage,flag_grouped=False,flag_quick=True,flag_test=False):
             case_range = (0, 40)
     print("------------Loading {}_data #{} {}-------------".format(usage,len(dataset),case_range))
 
+
     labels,feats = {}, {}
 
     labels, feat = [],[]
@@ -173,21 +183,22 @@ def load_data(usage,flag_grouped=False,flag_quick=True,flag_test=False):
             if len(gather_data(data,0,usage=='train')[0]) <= 150:
                 continue
             if data['design_name'] in [ 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+            #if data['design_name'] not in ['ecg', 'y_quantizer', 'y_huff']: continue
         # if data['design_name'] not in ['y_quantizer']: continue
 
         data['critical_path'][50] = data['critical_path'][0]
 
-        print(data['design_name'])
+        #print(data['design_name'])
         end_idx = min(case_range[1],len(data['critical_path']))
         for i in range(case_range[0],end_idx):
             cur_label,cur_feat = gather_data(data,i,not flag_test)
+
             # labels.extend(cur_label)
             # feat.extend(cur_feat)
             #
             if not flag_test:
-                for j in range(len(cur_feat)):
-                    labels.extend(cur_label)
-                    feat.extend(cur_feat)
+                labels.extend(cur_label)
+                feat.extend(cur_feat)
             elif flag_grouped:
                 if designs_group is None:
                     loaded_data[data['design_name']] = loaded_data.get(data['design_name'],[[],[]])
@@ -201,6 +212,9 @@ def load_data(usage,flag_grouped=False,flag_quick=True,flag_test=False):
             else:
                 labels.extend(cur_label)
                 feat.extend(cur_feat)
+
+        # print(len(labels),len(feat))
+        # exit()
 
     if not flag_test or not flag_grouped:
         loaded_data = [np.array(labels),np.array(feat)]
@@ -287,7 +301,7 @@ def train():
     train_label,train_feat = load_data('train',False,options.quick)
     test_data = load_data('test',options.flag_group,options.quick,flag_test=True)
 
-    print(train_feat.shape)
+    print(train_feat.shape,train_label.shape)
     train_feat = pd.DataFrame(train_feat)
     train_label = pd.DataFrame(train_label)
     print('Training ...')
@@ -301,7 +315,9 @@ def train():
     print('Finish!')
 
     print('Testing ...')
-    test(test_data,xgbr)
+    test_all(test_data,xgbr,flag_group=options.flag_group)
+
+
 
 if __name__ == "__main__":
     seed = random.randint(1, 10000)
@@ -322,7 +338,7 @@ if __name__ == "__main__":
         with tee.StdoutTee(stdout_f):
 
             usages = ['train','test']
-            #usages = ['test']
+            usages = ['test','train']
             for usage in usages:
                 data = load_data(usage, options.flag_group, options.quick,flag_test=True)
                 if len(data)==0:

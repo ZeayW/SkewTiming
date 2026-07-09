@@ -33,6 +33,24 @@ R2_score = R2Score().to(device)
 Loss = nn.MSELoss()
 Loss = nn.L1Loss()
 
+def enable_runtime_stats():
+    return getattr(options, 'log_level', 0) >= 1
+
+
+def new_stage_time():
+    return {
+        'MTDE_forward': 0,
+        'MTDE_backward': 0,
+        'FSE': 0,
+        'CPE_preparefeat': 0,
+        'CPE_pathfind': 0,
+        'CPE_encode': 0,
+        'proj': 0,
+        'other': 0,
+        'all': 0,
+    }
+
+
 with open(options.ntype_file, 'rb') as f:
     ntype2id, ntype2id_gate, ntype2id_module = pickle.load(f)
 num_gate_types = len(ntype2id_gate)
@@ -406,7 +424,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                                                                                     graphs_info, j, flag_addedge)
                     POs_label = POs_label[POs_mask]
 
-                    cur_labels_hat, _,_,prob_sum,prob_dev,prob_ce,cur_POs_criticalprob,_ = model(sampled_graphs, graphs_info)
+                    cur_labels_hat, _,_,prob_sum,prob_dev,prob_ce,cur_POs_criticalprob,_ = model(sampled_graphs, graphs_info)[:8]
 
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
 
@@ -508,8 +526,11 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
 
 def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
     flag_meta = options.flag_meta
+    runtime_stats = enable_runtime_stats()
+    stage_time = new_stage_time() if runtime_stats else None
 
-
+    num_cases = 100
+    #num_cases = 10
     #batch_size = options.batch_size if flag_reverse else len(test_data)
     test_idx_loader = get_idx_loader(test_data, batch_size,False)
     model.flag_train = False
@@ -521,11 +542,15 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
         labels,labels_hat = None,None
         # for i in range(0,len(test_data),batch_size):
         #     idxs = list(range(i,min(i+batch_size,len(test_data))))
+        corr_sim_avg = 0
+        num_edp = 0
         metadata_all = None
         for batch, idxs in enumerate(test_idx_loader):
+            if runtime_stats:
+                start= time()
             idxs = idxs.numpy().tolist()
             sampled_data = []
-            num_cases = 100
+
             graphs = []
             for idx in idxs:
                 data = test_data[idx]
@@ -539,7 +564,8 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
             graphs_info['nodes_name'] = data['nodes_name']
             design_name = data['design_name']
-
+            if runtime_stats:
+                stage_time['other'] += time()-start
 
             for POs, POs_mask in graphs_info['POs_batches']:
                 POs_mask = th.tensor(POs_mask).to(device)
@@ -552,8 +578,9 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                 if flag_r:
                     sampled_graphs = init_criticality_matrix(sampled_graphs, POs)
 
+
                 for j in range(num_cases):
-                    #if j==0: continue
+                    #if j in [0,50]: continue
 
                     #torch.cuda.empty_cache()
                     flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3,4,5]
@@ -561,7 +588,13 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
 
                     POs_label = POs_label[POs_mask]
 
-                    cur_labels_hat,cur_labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_,cur_metadata = model(sampled_graphs, graphs_info,flag_meta)
+                    model_out = model(sampled_graphs, graphs_info, flag_meta, stage_time if runtime_stats else None)
+                    cur_labels_hat,cur_labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_,cur_metadata = model_out[:8]
+
+                    if runtime_stats:
+                        num_edp += len(prob_dev)
+                        corr_sim_avg += th.sum(prob_dev)
+                        #print(corr_sim_avg/num_edp)
                     cur_labels_hat = cur_labels_hat.clamp(min=0, max=30)
 
                     if flag_meta:
@@ -587,6 +620,8 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                     if flag_addedge:
                         sampled_graphs.remove_edges(sampled_graphs.edges('all', etype='pi2po')[2], etype='pi2po')
 
+        if runtime_stats:
+            corr_sim_avg = corr_sim_avg / num_edp if num_edp else 0
 
         test_loss = Loss(labels_hat, labels).item()
         test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat, labels)
@@ -603,12 +638,23 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                 metadata_all[key] = th.tensor(metadata_all[key],dtype=th.float)
                 #print(key,metadata_all[key].shape)
 
+        if runtime_stats:
+            for key,value in stage_time.items():
+                if key!='all':
+                    stage_time['all'] += value
 
-        return labels_hat, labels,test_loss, test_r2,test_mape,min_ratio,max_ratio,metadata_all
+            runtime_str = 'Runtime: '
+            for key,value in stage_time.items():
+                runtime_str += '{}={}, '.format(key,round(value/num_cases,3))
+            print(runtime_str)
+
+        result = (labels_hat, labels,test_loss, test_r2,test_mape,min_ratio,max_ratio)
+        return result + (corr_sim_avg, metadata_all) if runtime_stats else result + (metadata_all,)
 
 
 def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',flag_group=False,flag_infer=False,flag_save=False,save_file_dir=None):
     metadata_all = {}
+    runtime_stats = enable_runtime_stats()
     print('Testing...')
     if flag_group:
         labels_hat_all, labels_all = None, None
@@ -621,16 +667,26 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
         for i, (name, data) in enumerate(test_data.items()):
             #torch.cuda.empty_cache()
 
+            if name in ['aes128']:
+                po_bs = 3500
+            else:
+                po_bs = 10000
 
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
             else:
-                labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio,metadata = test(model, data,flag_reverse,batch_size,po_bs=po_bs)
+                test_out = test(model, data,flag_reverse,batch_size,po_bs=po_bs)
+                if runtime_stats:
+                    labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio,corr_sim,metadata = test_out
+                else:
+                    labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio,metadata = test_out
                 if options.flag_meta:
                     metadata_all[name] = metadata
-            print(
-                '\t{} {},\t#endpoints:{}\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
-                    usage,name, len(labels),test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio))
+            message = '\t{} {},\t#endpoints:{}\t loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
+                usage,name, len(labels),test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio)
+            if runtime_stats:
+                message += ', \tcorr_sim={:.3f}'.format(corr_sim)
+            print(message)
             r2_list.append(test_r2)
             mape_list.append(test_mape)
             labels_hat_all = cat_tensor(labels_hat_all, labels_hat)
@@ -655,7 +711,11 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
         if flag_infer:
             _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, test_data,batch_size, usage,save_file_dir, flag_save)
         else:
-            labels_hat_all, labels_all, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio,metadata = test(model, test_data,flag_reverse,batch_size,po_bs=po_bs)
+            test_out = test(model, test_data,flag_reverse,batch_size,po_bs=po_bs)
+            if runtime_stats:
+                labels_hat_all, labels_all, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio,corr_sim,metadata = test_out
+            else:
+                labels_hat_all, labels_all, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio,metadata = test_out
             if options.flag_meta:
                 metadata_all['all'] = metadata
             test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
@@ -664,8 +724,11 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
             ratio = ratio.detach().cpu().numpy().tolist()
             with open('predict.pkl','wb') as f:
                 pickle.dump((labels,labels_hat,ratio),f)
-        print(
-            '\t{}: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(usage,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio))
+        message = '\t{}: loss={:.3f}\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
+            usage,test_loss, test_r2,test_mape,test_min_ratio,test_max_ratio)
+        if runtime_stats:
+            message += ', \tcorr_sim={:.3f}'.format(corr_sim)
+        print(message)
 
     if options.flag_meta:
         save_dir = os.path.join(options.checkpoint, options.predict_path)
@@ -767,7 +830,7 @@ def train(model):
                                                                                     graphs_info, i, flag_addedge)
 
                     POs_label = POs_label[POs_mask]
-                    labels_hat, labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_,_ = model(sampled_graphs, graphs_info)
+                    labels_hat, labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_,_ = model(sampled_graphs, graphs_info)[:8]
                     total_num += len(POs_label)
                     train_loss = Loss(labels_hat, POs_label)
                     path_loss =th.tensor(0.0)
@@ -826,7 +889,7 @@ def train(model):
             save_path = '../checkpoints/{}'.format(options.checkpoint)
             th.save(model.state_dict(), os.path.join(save_path,"{}.pth".format(epoch)))
             with open(os.path.join(checkpoint_path,'res.txt'),'a') as f:
-                f.write('Epoch {}, val: {:.3f},{:.3f}; test_all:{:.3f},{:.3f}; test_avg:{:.3f},{:.3f}\n'.format(epoch,val_r2,val_mape,test_r2,test_mape))
+                f.write('Epoch {}, val: {:.3f},{:.3f}; test: {:.3f},{:.3f}\n'.format(epoch,val_r2,val_mape,test_r2,test_mape))
 
 
 if __name__ == "__main__":
@@ -852,6 +915,7 @@ if __name__ == "__main__":
         # options.flag_rawpath = True
         # th.save(options,'../checkpoints/{}/options.pkl'.format(options.checkpoint))
         # exit()
+        options.checkpoint = input_options.checkpoint
         options.data_savepath = input_options.data_savepath
         options.test_iter = input_options.test_iter
         options.quick = input_options.quick
@@ -861,9 +925,11 @@ if __name__ == "__main__":
         options.flag_group = input_options.flag_group
         options.predict_path = input_options.predict_path
         options.flag_meta = input_options.flag_meta
+        options.log_level = input_options.log_level
 
 
         options = merge_with_loaded(input_options,options)
+        options.log_level = input_options.log_level
         
 
         logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '-' not in f and '_' not in f]

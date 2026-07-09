@@ -59,7 +59,7 @@ if 'round7' in data_path:
     designs_group = None
 else:
     split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-    with open('designs_group.pkl', 'rb') as f:
+    with open('designs_group_new.pkl', 'rb') as f:
         designs_group = pickle.load(f)
 with open(split_file, 'rb') as f:
     split_list = pickle.load(f)
@@ -92,6 +92,7 @@ def gather_data(data,index):
         feat.append(rand_paths_info['num_seq'])
         feat.append(rand_paths_info['num_cmb'])
         feat.append(rand_paths_info['num_reg'])
+
 
         path = critical_path_info['path']
         pi = path[0]
@@ -150,6 +151,7 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
             if data['design_name'] in [ 'tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
 
+        data['critical_path'][50] = data['critical_path'][0]
         end_idx = min(case_range[1],len(data['critical_path']))
         for i in range(case_range[0],end_idx):
             cur_label,cur_feat = gather_data(data,i)
@@ -180,7 +182,6 @@ def load_data(usage,flag_grouped=False,flag_quick=True):
     # feat = np.array(feat)
     # labels = np.array(labels)
     # return feat,labels
-
 
 
 def init(seed):
@@ -265,17 +266,20 @@ if __name__ == "__main__":
         with open(model_save_path,'rb') as f:
             model = pickle.load(f)
 
-        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '_' not in f]
+        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '_' not in f and '-' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
         log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint, log_idx)
         with tee.StdoutTee(stdout_f):
             #print(model)
 
-            usages = ['train','test','val']
-            usages = ['test']
+            usages = ['train','test']
+            #usages = ['test']
             for usage in usages:
+
                 data = load_data(usage, options.flag_group, options.quick)
+                if len(data)==0:
+                    continue
                 test_all(data,model,usage,options.flag_group)
 
     elif options.checkpoint:

@@ -63,7 +63,7 @@ if 'round7' in data_path:
     designs_group = None
 else:
     split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-    with open('designs_group.pkl', 'rb') as f:
+    with open('designs_group_new.pkl', 'rb') as f:
         designs_group = pickle.load(f)
 
 with open(split_file, 'rb') as f:
@@ -104,10 +104,10 @@ def load_data(usage,flag_quick=True,flag_grouped=False):
         # graph.ndata['PE'] = dgl.laplacian_pe(graph_homo, k=options.pe_size, padding=True)
         # loaded_data.append((graph,graph_info))
         # continue
-        if usage == 'test' and designs_group is None:
-            if len(graph_info['delay-label_pairs'][0][1]) <= 150:
-                continue
-            if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
+        # if usage == 'test' and designs_group is None:
+        #     if len(graph_info['delay-label_pairs'][0][1]) <= 150:
+        #         continue
+        #     if graph_info['design_name'] in ['tv80', 'sha3', 'ldpcenc', 'mc6809']: continue
 
         graph = heter2homo(graph)
         graph.ndata['feat_i'] = graph.ndata['ntype'][:,3:]
@@ -267,7 +267,7 @@ def test(model,test_data,batch_size):
         min_ratio = th.min(ratio)
         max_ratio = th.max(ratio)
 
-        return labels_hat,labels,test_loss, test_r2,test_mape,min_ratio,max_ratio
+        return labels_hat_all,labels_all,test_loss, test_r2,test_mape,min_ratio,max_ratio
 
 def cal_metrics(labels_hat,labels):
     r2 = R2_score(labels_hat, labels).item()
@@ -417,7 +417,7 @@ if __name__ == "__main__":
         options.quick = input_options.quick
         options.flag_group = input_options.flag_group
 
-        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test')]
+        logs_files = [f for f in os.listdir('../checkpoints/{}'.format(options.checkpoint)) if f.startswith('test') and '_' not in f and '-' not in f]
         logs_idx = [int(f[4:].split('.')[0]) for f in logs_files]
         log_idx = 1 if len(logs_idx)==0 else max(logs_idx)+1
         stdout_f = '../checkpoints/{}/test{}.log'.format(options.checkpoint, log_idx)
@@ -428,8 +428,8 @@ if __name__ == "__main__":
 
             model = model.to(device)
             model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu)))
-            usages = ['train','test','val']
-            usages = ['test']
+            usages = ['train','test']
+            #usages = ['test']
             for usage in usages:
                 flag_save = True
                 save_file_dir = options.checkpoint
