@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -188,7 +190,7 @@ class PositionAwareDelayEncoder(nn.Module):
 class NeighborCorrBias(nn.Module):
     def __init__(self, alpha: float = 0.7):
         super().__init__()
-        self.alpha = nn.Parameter(torch.tensor(alpha))
+        self.alpha = nn.Parameter(torch.tensor(float(alpha), dtype=torch.float))
 
     def forward(self, c_local, mask, H: int):
         B, L = c_local.shape
@@ -218,9 +220,9 @@ class SinkNodeAttentionBias(nn.Module):
     """
     def __init__(self, beta: float = 1.0, floor: float = 0.1, gamma: float = 0.7):
         super().__init__()
-        self.beta = nn.Parameter(torch.tensor(beta))
-        self.floor = nn.Parameter(torch.tensor(floor))
-        self.gamma = nn.Parameter(torch.tensor(gamma))
+        self.beta = nn.Parameter(torch.tensor(float(beta), dtype=torch.float))
+        self.floor = nn.Parameter(torch.tensor(float(floor), dtype=torch.float))
+        self.gamma = nn.Parameter(torch.tensor(float(gamma), dtype=torch.float))
 
     def forward(self, c_sink, mask, H: int):
         """
@@ -378,17 +380,16 @@ class PathTransformerW(nn.Module):
         else:
             h = self.base_pe(h)
 
-        for layer in self.layers:
-            if self.use_corr_bias:
-                # neighbor bias (all nodes)
-                bias_nn = self.neigh_bias(c_local=c_local, mask=mask, H=self.n_heads)  # [B,H,L,L]
-                # sink-only bias (row 0)
-                bias_sink = self.sink_bias(c_sink=c_sink, mask=mask, H=self.n_heads)   # [B,H,L,L]
-                # total bias: neighbor + sink row
-                attn_bias = bias_nn + bias_sink
-            else:
-                attn_bias = None
+        if self.use_corr_bias:
+            # c_local/c_sink are layer-invariant, so build the large [B,H,L,L]
+            # bias tensors once per forward instead of once per transformer layer.
+            bias_nn = self.neigh_bias(c_local=c_local, mask=mask, H=self.n_heads)
+            bias_sink = self.sink_bias(c_sink=c_sink, mask=mask, H=self.n_heads)
+            attn_bias = bias_nn + bias_sink
+        else:
+            attn_bias = None
 
+        for layer in self.layers:
             h_res = h
             h = layer.ln1(h)
             h = h_res + layer.attn(h, key_padding_mask=mask, attn_bias=attn_bias)

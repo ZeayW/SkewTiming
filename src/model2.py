@@ -1,24 +1,55 @@
 """Torch Module for TimeConv layer"""
 import dgl
+import torch
 import torch as th
 from torch import nn
 
 from utils import *
 from options import get_options
-import concurrent.futures as cf
-import math
-from pathgformer import *
-
 from transformer import PathTransformer
-#from transformer2 import PathTransformer
-
-# from pathformer import *
-#from pathformer2 import *
 from pathformer4 import *
 from time import time
 
-# from transformer import *
 options = get_options()
+
+
+TCAD6_MODEL_CONFIG = {
+    'hidden_dim': 128,
+    'flag_noTPE': False,
+    'flag_noFSE': False,
+    'flag_residual': True,
+    'use_pathgnn': True,
+    'path_feat_choice': 3,
+    'path_corr_choice': 1,
+    'path_delay_choice': 3,
+    'use_corr_pe': True,
+    'use_attn_bias': True,
+    'flag_gt': False,
+    'flag_transformer': 1,
+    'flag_rawpath': True,
+    'flag_singlepath': False,
+    'flag_delay': False,
+    'flag_degree': False,
+    'flag_width': True,
+    'flag_path_supervise': True,
+    'flag_reverse': True,
+    'flag_splitfeat': False,
+    'agg_choice': 0,
+    'attn_choice': 0,
+    'alpha': 5,
+    'beta': 5,
+    'base_pe': 'sinusoidal',
+}
+
+
+def require_tcad6_model_config(name, value):
+    expected = TCAD6_MODEL_CONFIG[name]
+    if value != expected:
+        raise ValueError(
+            '{}={} is no longer supported in the active BPN path. '
+            'Use src/scripts/run_train_tcad6.sh as the canonical configuration '
+            '({}={}).'.format(name, value, name, expected)
+        )
 
 
 # device = th.device("cuda:" + str(options.gpu) if th.cuda.is_available() and options.gpu!=-1 else "cpu")
@@ -257,180 +288,72 @@ class BPN(nn.Module):
                  infeat_dim2,
                  hidden_dim,
                  device,
-                 global_cat_choice=0,
-                 global_info_choice=0,
-                 agg_choice=0,
-                 attn_choice=1,
-                 alpha=10,
-                 beta=10,
-                 flag_noTPE = False,
-                 flag_noFSE = False,
-                 flag_residual=False,
-                 use_pathgnn=True,
-                 path_feat_choice=0,
-                 path_corr_choice=0,
-                 path_delay_choice = -1,
-                 base_pe='learned',
-                 use_corr_pe=False,
-                 use_attn_bias=False,
-                 flag_gt=False,
-                 flag_transformer=False,
-                 flag_rawpath=False,
-                 flag_singlepath=False,
-                 flag_delay=False,
-                 flag_degree=False,
-                 flag_width=False,
-                 flag_path_supervise=False,
-                 flag_reverse=False,
-                 flag_splitfeat=False,
+                 alpha=5,
+                 beta=5,
+                 base_pe='sinusoidal',
+                 flag_path_supervise=True,
+                 flag_reverse=True,
                  ):
         super(BPN, self).__init__()
 
-        self.flag_noTPE = flag_noTPE
-        self.flag_noFSE = flag_noFSE
+        for name, value in {
+            'hidden_dim': hidden_dim,
+            'flag_path_supervise': flag_path_supervise,
+            'flag_reverse': flag_reverse,
+            'alpha': alpha,
+            'beta': beta,
+            'base_pe': base_pe,
+        }.items():
+            require_tcad6_model_config(name, value)
 
         self.device = device
-        self.flag_gt = flag_gt
-        self.flag_transformer = flag_transformer
-        self.flag_residual = flag_residual
-        self.flag_rawpath = flag_rawpath
-        self.use_pathgnn = use_pathgnn
-        self.path_feat_choice = path_feat_choice
-        self.path_corr_choice = path_corr_choice
-        self.path_delay_choice = path_delay_choice
-        self.flag_singlepath = flag_singlepath
-        self.flag_delay = flag_delay
-        self.flag_degree = flag_degree
-        self.flag_width = flag_width
         self.flag_path_supervise = flag_path_supervise
         self.flag_reverse = flag_reverse
         self.infeat_dim = infeat_dim1
         self.hidden_dim = hidden_dim
-        self.agg_choice = agg_choice
-        self.attn_choice = attn_choice
-        self.use_corr_pe = use_corr_pe
-        self.use_corr_bias = use_attn_bias
         self.mlp_pi = MLP(4, int(hidden_dim / 2), hidden_dim)
-        # self.linear_pi = th.nn.Linear(4, hidden_dim)
-        self.mlp_agg = MLP(hidden_dim, int(hidden_dim / 2), hidden_dim)
 
         tf_dim = hidden_dim
-        d_in = infeat_dim1 + infeat_dim2 if flag_rawpath and not self.use_pathgnn else hidden_dim
-        # if flag_degree and path_feat_choice == 0:
-        #     d_in += 1
-
-        if self.flag_transformer in [1, 3, 4]:
-            if self.use_corr_bias or self.use_corr_pe:
-                self.pathformer = PathTransformerW(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, alpha=alpha,beta=beta,base_pe=base_pe,
-                                                   use_corr_pe=use_corr_pe, use_attn_bias=use_attn_bias)
-            else:
-                self.pathformer = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe)
-
-        if self.flag_transformer in [2, 3, 4]:
-            self.pathformer2 = PathTransformer(d_in=d_in, d_model=tf_dim, n_heads=4, n_layers=3, base_pe=base_pe,
-                                               use_cls_token=True)
-
-        if self.flag_residual:
-            self.mlp_out_residual = MLP(tf_dim, self.hidden_dim, self.hidden_dim, 1,
-                                                    negative_slope=0.1)
-
-        #assert self.path_feat_choice in [0,1,2,3,4], "Wrong path feat choice"
-        if self.use_pathgnn:
-
-            if self.flag_rawpath:
-                gnn_indim = infeat_dim1 + infeat_dim2
-            else:
-                gnn_indim = hidden_dim
-
-            if self.flag_degree:
-                gnn_indim += 1
-
-            if self.path_feat_choice in [1,2,3]:
-                gnn_outdim = int(tf_dim/2)
-            else:
-                gnn_outdim = tf_dim
-            self.gnn_pathfeat = VanillaDirGNN(in_dim=gnn_indim, hidden_dim=gnn_outdim)
-
-        if self.path_feat_choice in [1,2]:
-            self.proj_pathfeat = nn.Linear(1,int(tf_dim/2))
-        elif self.path_feat_choice in [3]:
-            self.proj_pathfeat = nn.Linear(2, int(tf_dim / 2))
-
-        if self.path_delay_choice in [1,2,3]:
-           self.linear_delay = nn.Linear(1,tf_dim)
-        # if self.path_delay_choice in [3]:
-        #     self.linear_delay = nn.Linear(1, 32)
-
-
-
-        if self.flag_gt:
-            self.pathgformer = PathGraphFormer(d_in=d_in, d_model=hidden_dim, n_heads=4, n_layers=2, d_ff=128,
-                                               use_corr_pe=use_corr_pe, use_corr_bias=use_attn_bias)
+        gnn_outdim = int(tf_dim / 2)
+        self.pathformer = PathTransformerW(
+            d_in=tf_dim,
+            d_model=tf_dim,
+            n_heads=4,
+            n_layers=3,
+            alpha=alpha,
+            beta=beta,
+            base_pe=base_pe,
+            use_corr_pe=True,
+            use_attn_bias=True,
+        )
+        self.mlp_out_residual = MLP(tf_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
+        self.gnn_pathfeat = VanillaDirGNN(in_dim=infeat_dim1 + infeat_dim2, hidden_dim=gnn_outdim)
+        self.proj_pathfeat = nn.Linear(2, int(tf_dim / 2))
+        self.linear_delay = nn.Linear(1, tf_dim)
 
         self.mlp_w2 = MLP(2, hidden_dim, 1)
-        self.mlp_w3 = MLP(2, hidden_dim, 1)
 
         self.probinfo_dim = 32
         self.mlp_probinfo = MLP(1, hidden_dim, self.probinfo_dim)
 
-        new_out_dim = 0
-        if not self.flag_noTPE: new_out_dim += hidden_dim # the TPE size
-        if not self.flag_noFSE: new_out_dim += hidden_dim+ self.probinfo_dim if not self.use_pathgnn else gnn_outdim+ self.probinfo_dim # FSE
-
-
-
-        if self.flag_transformer in [1, 2, 3]:
-            new_out_dim += tf_dim
-        elif self.flag_transformer in [4]:
-            new_out_dim += 2 * tf_dim
-        if self.flag_gt:
-            new_out_dim += hidden_dim
-
-        # if self.path_delay_choice in [3]:
-        #     new_out_dim += 32
-
-        if self.path_delay_choice in [3]:
-            new_out_dim += tf_dim
-        elif self.path_delay_choice in [6, 7]:
-            new_out_dim += 1
-
-        if new_out_dim != 0: self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1,
-                                                    negative_slope=0.1)
+        # TPE + FSE + CPE(path embedding) + path-delay embedding for path_delay_choice=3.
+        new_out_dim = hidden_dim + gnn_outdim + self.probinfo_dim + tf_dim + tf_dim
+        self.mlp_out_new = MLP(new_out_dim, self.hidden_dim, self.hidden_dim, 1, negative_slope=0.1)
         self.new_out_dim = new_out_dim
 
-        out_dim = hidden_dim
-        if flag_splitfeat:
-            self.feat_name1 = 'feat_gate'
-            self.feat_name2 = 'feat_module'
-
-            self.mlp_self_gate = MLP(infeat_dim1, int(hidden_dim / 2), hidden_dim)
-            self.mlp_self_module = MLP(infeat_dim2, int(hidden_dim / 2), hidden_dim)
-            self.infeat_dim2 = infeat_dim2
-            self.infeat_dim1 = infeat_dim1
-        else:
-            self.feat_name1 = 'feat'
-            self.feat_name2 = 'feat'
-            self.infeat_dim2 = infeat_dim2 + infeat_dim1
-            self.infeat_dim1 = infeat_dim2 + infeat_dim1
-            self.mlp_self = MLP(self.infeat_dim1, int(hidden_dim / 2), hidden_dim)
-            self.mlp_self_module = self.mlp_self
-            self.mlp_self_gate = self.mlp_self
+        self.feat_name1 = 'feat'
+        self.feat_name2 = 'feat'
+        self.infeat_dim2 = infeat_dim2 + infeat_dim1
+        self.infeat_dim1 = infeat_dim2 + infeat_dim1
 
         feat_dim_m = self.infeat_dim2 + 1
         feat_dim_g = self.infeat_dim1
 
-        if self.flag_width:
-            feat_dim_m += 1
+        feat_dim_m += 1
 
         neigh_dim_m = self.hidden_dim + feat_dim_m
         neigh_dim_g = self.hidden_dim + feat_dim_g
 
-        if self.flag_delay:
-            neigh_dim_g += 1
-            neigh_dim_m += 1
-
-        self.mlp_neigh_module = MLP(neigh_dim_m, int(hidden_dim / 2), hidden_dim)
-        self.mlp_neigh_gate = MLP(neigh_dim_g, int(hidden_dim / 2), hidden_dim)
         self.linear_neigh_module = th.nn.Linear(neigh_dim_m, hidden_dim)
         self.linear_neigh_gate = th.nn.Linear(neigh_dim_g, hidden_dim)
 
@@ -439,28 +362,19 @@ class BPN(nn.Module):
         self.attention_vector_g = nn.Parameter(th.randn(atnn_dim_g, 1), requires_grad=True)
         self.attention_vector_m = nn.Parameter(th.randn(atnn_dim_m, 1), requires_grad=True)
 
-        self.mlp_out = MLP(out_dim, hidden_dim, 1)
         self.activation = th.nn.LeakyReLU(negative_slope=0)
         self.activation2 = th.nn.LeakyReLU(negative_slope=0.2)
 
     def nodes_func_module(self, nodes):
         h = self.activation(nodes.data['neigh'])
         # print('m',th.sum(h[h<0]))
-        if self.flag_reverse or self.flag_path_supervise:
-            return {'h': h, 'attn_sum': nodes.data['attn_sum'], 'attn_max': nodes.data['attn_max']}
-        else:
-            return {'h': h}
+        return {'h': h, 'attn_sum': nodes.data['attn_sum'], 'attn_max': nodes.data['attn_max']}
 
     def nodes_func_gate(self, nodes):
         # mask = nodes.data['is_po'].squeeze() != 1
         h = self.activation(nodes.data['neigh'])
         # print('g', th.sum(h[h < 0]))
-        if (self.flag_reverse or self.flag_path_supervise) and self.attn_choice == 1:
-            return {'h': h, 'exp_src_sum': nodes.data['exp_src_sum'], 'exp_src_max': nodes.data['exp_src_max']}
-        elif (self.flag_reverse or self.flag_path_supervise) and self.attn_choice == 0:
-            return {'h': h, 'attn_sum': nodes.data['attn_sum'], 'attn_max': nodes.data['attn_max']}
-        else:
-            return {'h': h}
+        return {'h': h, 'attn_sum': nodes.data['attn_sum'], 'attn_max': nodes.data['attn_max']}
 
     def edge_msg_module_weight(self, edges):
 
@@ -474,15 +388,11 @@ class BPN(nn.Module):
         h_dst = th.cat((edges.data['bit_position'], edges.dst[self.feat_name2]), dim=1)
         # print(th.sum(edges.data['bit_position']/edges.dst['width'])/len(edges.data['bit_position']))
 
-        if self.flag_width:
-            h_dst = th.cat((h_dst, edges.dst['width2']), dim=1)
+        h_dst = th.cat((h_dst, edges.dst['width2']), dim=1)
 
 
         z = th.cat((edges.src['h'], h_dst), dim=1)
-        if self.flag_delay:
-            z = th.cat((z, edges.src['delay']), dim=1)
 
-        # z = self.mlp_neigh_module(z)
         z = self.linear_neigh_module(z)
         e = th.matmul(z, self.attention_vector_m)
         e = self.activation2(e)
@@ -496,37 +406,25 @@ class BPN(nn.Module):
 
     def reduce_func_attn_m(self, nodes):
         # h_pos = th.mean(nodes.mailbox['pos'],dim=1)
-        if self.flag_reverse or self.flag_path_supervise:
-            attn_e = nodes.mailbox['attn_e']
-            max_attn_e = th.max(attn_e, dim=1).values
-            attn_e = attn_e - max_attn_e.unsqueeze(1)
-            attn_e_exp = th.exp(attn_e)
-            attn_exp_sum = th.sum(attn_e_exp, dim=1).unsqueeze(1)
-            alpha = attn_e_exp / attn_exp_sum
-            h = th.sum(alpha * nodes.mailbox['m'], dim=1)
-            return {'neigh': h, 'attn_sum': attn_exp_sum, 'attn_max': max_attn_e}
-        else:
-            alpha = th.softmax(nodes.mailbox['attn_e'], dim=1)
-            h = th.sum(alpha * nodes.mailbox['m'], dim=1)
-            # print(th.mean(nodes.mailbox['pos'],dim=1),h.shape)
-
-            return {'neigh': h}
+        attn_e = nodes.mailbox['attn_e']
+        max_attn_e = th.max(attn_e, dim=1).values
+        attn_e = attn_e - max_attn_e.unsqueeze(1)
+        attn_e_exp = th.exp(attn_e)
+        attn_exp_sum = th.sum(attn_e_exp, dim=1).unsqueeze(1)
+        alpha = attn_e_exp / attn_exp_sum
+        h = th.sum(alpha * nodes.mailbox['m'], dim=1)
+        return {'neigh': h, 'attn_sum': attn_exp_sum, 'attn_max': max_attn_e}
 
     def reduce_func_attn_g(self, nodes):
 
-        if self.flag_reverse or self.flag_path_supervise:
-            attn_e = nodes.mailbox['attn_e']
-            max_attn_e = th.max(attn_e, dim=1).values
-            attn_e = attn_e - max_attn_e.unsqueeze(1)
-            attn_e_exp = th.exp(attn_e)
-            attn_exp_sum = th.sum(attn_e_exp, dim=1).unsqueeze(1)
-            alpha = attn_e_exp / attn_exp_sum
-            h = th.sum(alpha * nodes.mailbox['m'], dim=1)
-            return {'neigh': h, 'attn_sum': attn_exp_sum, 'attn_max': max_attn_e}
-        else:
-            alpha = th.softmax(nodes.mailbox['attn_e'], dim=1)
-            h = th.sum(alpha * nodes.mailbox['m'], dim=1)
-            return {'neigh': h}
+        attn_e = nodes.mailbox['attn_e']
+        max_attn_e = th.max(attn_e, dim=1).values
+        attn_e = attn_e - max_attn_e.unsqueeze(1)
+        attn_e_exp = th.exp(attn_e)
+        attn_exp_sum = th.sum(attn_e_exp, dim=1).unsqueeze(1)
+        alpha = attn_e_exp / attn_exp_sum
+        h = th.sum(alpha * nodes.mailbox['m'], dim=1)
+        return {'neigh': h, 'attn_sum': attn_exp_sum, 'attn_max': max_attn_e}
 
     def reduce_func_mean(self, nodes):
         return {'neigh': th.mean(nodes.mailbox['m'], dim=1), 'pos': th.mean(nodes.mailbox['pos'], dim=1)}
@@ -537,9 +435,6 @@ class BPN(nn.Module):
         # h_dst = self.linear_feat_gate(h_dst)
 
         z = th.cat((edges.src['h'], h_dst), dim=1)
-        if self.flag_delay:
-            z = th.cat((z, edges.src['delay']), dim=1)
-        # z = self.mlp_neigh_gate(z)
         z = self.linear_neigh_gate(z)
         e = th.matmul(z, self.attention_vector_g)
         e = self.activation2(e)
@@ -548,33 +443,13 @@ class BPN(nn.Module):
 
     def edge_msg_gate_weight(self, edges):
 
-        if self.attn_choice == 0:
-            weight = th.exp(edges.data['attn_e'] - edges.dst['attn_max']) / edges.dst['attn_sum'].squeeze(2)
-        elif self.attn_choice == 1:
-            msg = edges.src['h'] - edges.dst['exp_src_max']
-            weight = th.mean(th.exp(msg) / edges.dst['exp_src_sum'], dim=1)
-        else:
-            assert False
+        weight = th.exp(edges.data['attn_e'] - edges.dst['attn_max']) / edges.dst['attn_sum'].squeeze(2)
 
         return {'weight': weight}
 
     def message_func_gate(self, edges):
         m = edges.data['z']
         return {'m': m, 'attn_e': edges.data['attn_e']}
-
-    def reduce_func_smoothmax(self, nodes):
-        msg = nodes.mailbox['m']
-        # msg = msg - th.max(msg)
-        # msg = msg - 1000
-        weight = th.softmax(msg, dim=1)
-        # criticality = th.mean(weight,dim=2)
-        exp_src_max = th.max(msg, dim=1).values
-        exp_src_sum = th.sum(th.exp(msg - exp_src_max.unsqueeze(1)), dim=1)
-
-        if self.flag_reverse or self.flag_path_supervise:
-            return {'neigh': (msg * weight).sum(1), 'exp_src_sum': exp_src_sum, 'exp_src_max': exp_src_max}
-        else:
-            return {'neigh': (msg * weight).sum(1)}
 
     def message_func_reverse(self, edges):
 
@@ -600,36 +475,14 @@ class BPN(nn.Module):
         is_critical = th.logical_and(edges.src['is_critical'], edges.src['max_prob'] == edges.dst['hp'])
         is_critical = th.logical_and(is_critical, edges.dst['hp'] != 0)
 
-        if self.use_corr_pe or self.use_corr_bias:
-            w = is_critical * edges.data['weight']
-            return {'is_critical': is_critical, 'w': w}
-        else:
-            return {'is_critical': is_critical}
+        w = is_critical * edges.data['weight']
+        return {'is_critical': is_critical, 'w': w}
 
     def reduce_func_maxprob_r(self, nodes):
 
         is_critical = th.any(nodes.mailbox['is_critical'], dim=1)
-        if self.use_corr_pe or self.use_corr_bias:
-            corr_local = th.sum(nodes.mailbox['w'], dim=1)
-            return {'is_critical': is_critical, 'cl': corr_local}
-        else:
-            return {'is_critical': is_critical}
-
-    def message_func_delay(self, edges):
-        return {'md': edges.src['delay'], 'w': edges.data['weight']}
-        # return {'md':edges.src['delay']}
-
-    def reduce_func_delay_g(self, nodes):
-
-        # input_delay = th.max(nodes.mailbox['md'],dim=1).values
-        delay = th.sum(nodes.mailbox['md'] * nodes.mailbox['w'], dim=1)
-        return {'delay': delay}
-
-    def reduce_func_delay_m(self, nodes):
-
-        # input_delay = th.max(nodes.mailbox['md'], dim=1).values
-        delay = th.sum(nodes.mailbox['md'] * nodes.mailbox['w'], dim=1)
-        return {'delay': delay}
+        corr_local = th.sum(nodes.mailbox['w'], dim=1)
+        return {'is_critical': is_critical, 'cl': corr_local}
 
     def message_func_prob(self, edges):
         msg = th.gather(edges.src['hp'], dim=1, index=edges.dst['id'])
@@ -639,8 +492,6 @@ class BPN(nn.Module):
     def nodes_func_pi(self, nodes):
         h = th.cat((nodes.data['delay'], nodes.data['value']), dim=1)
         h = self.mlp_pi(h)
-        # h = self.linear_pi(h)
-
         h = self.activation(h)
         # mask = nodes.data['is_po'].squeeze() != 1
         # h[mask] = self.activation(h[mask])
@@ -659,7 +510,6 @@ class BPN(nn.Module):
         #prob_dev = F.cosine_similarity(prob_target,nodes.mailbox['mp'],dim=1)
         prob_ce = th.sum(prob_target * th.log(prob_target / (nodes.mailbox['mp'] + 1e-10)), dim=1)
 
-        mask = prob_target
         prob_dev = F.cosine_similarity(prob_target,nodes.mailbox['mp'],dim=1)
         #prob_dev = F.kl_div(th.log_softmax(nodes.mailbox['mp'],dim=0),prob_target,reduction='none').sum(dim=1)
 
@@ -679,135 +529,102 @@ class BPN(nn.Module):
 
         return {'prob_ce': prob_ce, 'prob_sum': prob_sum, 'prob_dev': prob_dev}
 
-    def prop_delay(self, graph, graph_info):
-        topo = graph_info['topo']
-        for i, nodes in enumerate(topo[1:]):
-            isModule_mask = graph.ndata['is_module'][nodes] == 1
-            isGate_mask = graph.ndata['is_module'][nodes] == 0
-            nodes_gate = nodes[isGate_mask]
-            nodes_module = nodes[isModule_mask]
-            if len(nodes_gate) != 0:
-                # eids = graph.in_edges(nodes_gate, form='eid', etype='intra_gate')
-                graph.pull(nodes_gate, self.message_func_delay, self.reduce_func_delay_g, etype='intra_gate')
-                # graph.apply_edges(self.edge_msg_delay_ratio_g, eids, etype='intra_gate')
-            if len(nodes_module) != 0:
-                # eids = graph.in_edges(nodes_module, form='eid', etype='intra_module')
-                graph.pull(nodes_module, self.message_func_delay, self.reduce_func_delay_m, etype='intra_module')
-                # graph.apply_edges(self.edge_msg_delay_ratio_m,eids,etype='intra_module')
-        return graph.ndata['delay'], graph.ndata['input_delay']
-
-    def prop_backward(self, graph, graph_info):
+    def prop_backward_dgl(self, graph, graph_info):
         topo_r = graph_info['topo_r']
         for l, nodes in enumerate(topo_r[1:]):
             graph.pull(nodes, self.message_func_reverse, self.reduce_fun_reverse, etype='reverse')
 
         return graph.ndata['hp']
 
-    def prop_backward_new(self, graph, graph_info):
-        topo_r = graph_info['topo_r']
+    def prop_backward_scatter(self, graph, graph_info):
+        hp = graph.ndata['hp']
+        edge_weight = graph.edges['reverse'].data['weight'].reshape(-1, 1)
+        topo_r_edges = graph_info.get('topo_r_in_edges')
 
-        if self.use_pathgnn:
-            feat_p = graph_info['nodes_emb']
-            # feat_p = self.gnn_pathfeat(graph,feat_p)
-        elif self.flag_rawpath:
-            feat_p = graph.ndata['feat']
-        else:
-            feat_p = graph.ndata['h']
+        if topo_r_edges is None:
+            topo_r_edges = [
+                graph.in_edges(nodes, form='all', etype='reverse')
+                for nodes in graph_info['topo_r'][1:]
+            ]
 
-        path_feat = feat_p[graph_info['POs']]
-        if self.path_feat_choice == 1:
-            distance = th.zeros((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            feat_raw = self.proj_pathfeat(distance)
-            path_feat = th.cat((path_feat, feat_raw), dim=1)
-        elif self.path_feat_choice == 2:
-            corr = th.ones((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            feat_raw = self.proj_pathfeat(corr)
-            path_feat = th.cat((path_feat, feat_raw), dim=1)
-        elif self.path_feat_choice == 3:
-            distance = th.zeros((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            corr = th.ones((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
-            path_feat = th.cat((path_feat, feat_raw), dim=1)
+        for src, dst, eid in topo_r_edges:
+            if eid.numel() == 0:
+                continue
+            msg = hp[src] * edge_weight[eid]
+            if th.is_grad_enabled():
+                hp_next = hp.clone()
+                hp_next[dst] = 0
+                hp = hp_next.index_add(0, dst, msg)
+            else:
+                hp[dst] = 0
+                hp.index_add_(0, dst, msg)
 
-        ep_path_feat = path_feat.reshape(path_feat.shape[0], 1, path_feat.shape[1])
+        graph.ndata['hp'] = hp
+        return hp
 
-        ep_path_lengths = graph.ndata['level'][graph_info['POs']] + 1
-        ep_path_lengths = ep_path_lengths.squeeze(1)
+    def prop_backward(self, graph, graph_info):
+        mtde_backward_impl = getattr(options, 'mtde_backward_impl', 'dgl')
+        if mtde_backward_impl == 'dgl':
+            return self.prop_backward_dgl(graph, graph_info)
+        if mtde_backward_impl == 'scatter':
+            return self.prop_backward_scatter(graph, graph_info)
+        if mtde_backward_impl == 'compare':
+            initial_hp = graph.ndata['hp'].clone()
+            dgl_hp = self.prop_backward_dgl(graph, graph_info).clone()
+            graph.ndata['hp'] = initial_hp
+            scatter_hp = self.prop_backward_scatter(graph, graph_info)
+            if not th.allclose(dgl_hp, scatter_hp, rtol=1e-4, atol=1e-5):
+                max_abs = th.max(th.abs(dgl_hp - scatter_hp)).item()
+                raise ValueError('MTDE scatter backward mismatch: max_abs={:.6g}'.format(max_abs))
+            return scatter_hp
+        raise ValueError('Unknown MTDE backward implementation: {}'.format(mtde_backward_impl))
 
-        for l, nodes in enumerate(topo_r[1:]):
-            graph.pull(nodes, self.message_func_reverse, self.reduce_fun_reverse, etype='reverse')
-
-            nodes_prob_l = graph.ndata['hp'][nodes]
-            nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-            # nodes_prob_l_tr = row_topoon_nonzero(nodes_prob_l_tr)
-
-            nodes_feat_l = feat_p[nodes]
-            ep_feat_l = th.matmul(nodes_prob_l_tr, nodes_feat_l)  # N_ep * d_f
-
-            if self.path_feat_choice == 1:
-                distance = th.zeros((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
-                feat_raw = self.proj_pathfeat(distance)
-                ep_feat_l = th.cat((ep_feat_l, feat_raw), dim=1)
-            elif self.path_feat_choice == 2:
-                corr = th.ones((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
-                feat_raw = self.proj_pathfeat(corr)
-                ep_feat_l = th.cat((ep_feat_l, feat_raw), dim=1)
-            elif self.path_feat_choice == 3:
-                distance = th.zeros((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
-                corr = th.ones((ep_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
-                feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
-                ep_feat_l = th.cat((ep_feat_l, feat_raw), dim=1)
-            ep_feat_l = ep_feat_l.reshape(ep_feat_l.shape[0], 1, ep_feat_l.shape[1])
-            ep_path_feat = th.cat((ep_path_feat, ep_feat_l), dim=1)
-            # ep_path_feat = th.cat((ep_feat_sum_l,ep_path_feat), dim=1)
-
-        # print(ep_path_feat.shape,ep_path_lengths.shape,th.max(ep_path_lengths))
-        ep_path_emb = self.pathformer2(ep_path_feat, ep_path_lengths)
-
-        return graph.ndata['hp'], ep_path_emb
+    def append_path_context(self, path_feat, distance, corr):
+        feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
+        return th.cat((path_feat, feat_raw), dim=1)
 
 
-    def path_embedding(self, graph, graph_info, stage_time=None):
+    def init_path_buffers(self, graph, graph_info):
+        feat_p = graph_info['nodes_emb']
+        po_count = len(graph_info['POs'])
+        po_feat = feat_p[graph_info['POs']]
+        distance = th.zeros((po_count, 1), dtype=th.float, device=graph.device)
+        corr = th.ones((po_count, 1), dtype=th.float, device=graph.device)
+        po_feat = self.append_path_context(po_feat, distance, corr)
+
+        max_path_len = len(graph_info['topo_r'])
+        path_feat = th.zeros((po_count, max_path_len, po_feat.shape[1]),
+                             dtype=po_feat.dtype, device=graph.device)
+        path_feat[:, 0, :] = po_feat
+        path_lengths = th.zeros(po_count, dtype=th.float, device=graph.device)
+        path_inputdelay = th.zeros((po_count, 1), dtype=th.float, device=graph.device)
+
+        c_local = torch.zeros(po_count, max_path_len, device=graph.device)
+        c_sink = torch.zeros(po_count, max_path_len, device=graph.device)
+        c_sink[:, 0] = 1
+
+        return feat_p, po_count, path_feat, path_lengths, path_inputdelay, c_sink, c_local
+
+    def encode_path_inputs(self, path_feat, path_lengths, path_inputdelay, c_sink, c_local, stage_time=None):
+        timed = stage_time is not None
+        if timed:
+            start = time()
+        path_emb = self.pathformer(path_feat, path_lengths, c_sink=c_sink, c_local=c_local)
+        if timed:
+            stage_time['CPE_encode'] += time() - start
+
+        return path_emb, path_lengths, path_inputdelay
+
+    def path_search_dense(self, graph, graph_info, stage_time=None):
 
         timed = stage_time is not None
         if timed:
             start = time()
-        if self.use_pathgnn:
-            feat_p = graph_info['nodes_emb']
-            #feat_p = self.gnn_pathfeat(graph,feat_p)
-        elif self.flag_rawpath:
-            feat_p = graph.ndata['feat']
-        else:
-            feat_p = graph.ndata['h']
-
-        path_feat = feat_p[graph_info['POs']]
-        if self.path_feat_choice == 1:
-            distance =  th.zeros((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            feat_raw = self.proj_pathfeat(distance)
-            path_feat = th.cat((path_feat, feat_raw), dim=1)
-        elif self.path_feat_choice == 2:
-            corr = th.ones((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            feat_raw = self.proj_pathfeat(corr)
-            path_feat = th.cat((path_feat, feat_raw), dim=1)
-        elif self.path_feat_choice == 3:
-            distance =  th.zeros((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            corr = th.ones((path_feat.shape[0], 1), dtype=th.float, device=graph.device)
-            feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
-            path_feat = th.cat((path_feat, feat_raw), dim=1)
-
-        path_feat = path_feat.reshape(path_feat.shape[0], 1, path_feat.shape[1])
-        path_lengths = th.zeros(len(graph_info['POs']), dtype=th.float, device=graph.device)
-
-        path_inputdelay = th.zeros((len(graph_info['POs']), 1), dtype=th.float, device=graph.device)
-        #path_numPI = th.zeros((len(graph_info['POs']), 1), dtype=th.float, device=graph.device)
-
-        is_ended = th.zeros(len(graph_info['POs']), dtype=th.bool, device=graph.device)
-
-        if self.use_corr_bias or self.use_corr_pe:
-            c_local = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']),
-                                  device=graph.device)  # fill per-path valid region only
-            c_sink = torch.zeros(len(graph_info['POs']), len(graph_info['topo_r']), device=graph.device)
-            c_sink[:, 0] = 1
+        feat_p, po_count, path_feat, path_lengths, path_inputdelay, c_sink, c_local = \
+            self.init_path_buffers(graph, graph_info)
+        is_ended = th.zeros(po_count, dtype=th.bool, device=graph.device)
+        debug_counts = [] if getattr(options, 'log_level', 0) >= 2 else None
+        debug_pairs = [] if getattr(options, 'log_level', 0) >= 2 else None
         if timed:
             stage_time['CPE_preparefeat'] += time() - start
 
@@ -827,11 +644,16 @@ class BPN(nn.Module):
                 graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
 
                 critical_mask = th.transpose(graph.ndata['is_critical'][nodes], 0, 1)
+                critical_counts = th.sum(critical_mask, dim=1)
+                if debug_counts is not None:
+                    debug_counts.append(critical_counts.detach().cpu())
+                    debug_ep, debug_pos = critical_mask.nonzero(as_tuple=True)
+                    debug_pairs.append((debug_ep.detach().cpu(), nodes[debug_pos].detach().cpu()))
 
                 # if th.sum(critical_mask) == 0:
                 #     break
 
-                is_ended_mask = th.logical_and(th.sum(critical_mask, dim=1) == 0, ~is_ended)
+                is_ended_mask = th.logical_and(critical_counts == 0, ~is_ended)
                 is_ended[is_ended_mask] = True
                 path_lengths[is_ended_mask] = l + 1
                 if timed:
@@ -840,69 +662,34 @@ class BPN(nn.Module):
                 if th.sum(critical_mask) == 0:
                     break
 
-                if self.flag_singlepath:
-                    idx = critical_mask.int().argmax(dim=1)  # (n_rows,)
-                    # Build one-hot, then cast to bool
-                    critical_mask = F.one_hot(idx, num_classes=critical_mask.size(
-                        1)).bool()  # (n_rows, n_cols) [web:101]
-                    # Optional: zero out rows that had no True originally
-                    has_true = critical_mask.any(dim=1, keepdim=True)  # (n_rows, 1) [web:100][web:103]
-                    critical_mask = critical_mask & has_true
-                    graph.ndata['is_critical'][nodes] = th.transpose(critical_mask, 0, 1)
-
                 if timed:
                     start = time()
                 nodes_feat_l = feat_p[nodes]
                 path_feat_l = th.matmul(critical_mask.float(), nodes_feat_l)
-                num_critical = th.sum(critical_mask, dim=1, keepdim=True)
+                num_critical = critical_counts.unsqueeze(1)
                 path_feat_l = path_feat_l / num_critical.clamp(min=1)
 
                 nodes_delay_l = graph.ndata['is_critical'][nodes] * graph.ndata['delay'][nodes]
                 nodes_delay_l = th.max(th.transpose(nodes_delay_l,0,1),dim=1).values.unsqueeze(1)
                 path_inputdelay = th.maximum(path_inputdelay,nodes_delay_l)
 
-                if self.path_feat_choice ==1:
-                    distance = (l+1)*th.ones((path_feat_l.shape[0],1),dtype=th.float,device=graph.device)
-                    feat_raw = self.proj_pathfeat(distance)
-                    path_feat_l = th.cat((path_feat_l,feat_raw),dim=1)
-                elif self.path_feat_choice == 2:
-                    nodes_prob_l = graph.ndata['hp'][nodes]
-                    nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-                    corr = th.sum(nodes_prob_l_tr * critical_mask, dim=1) / th.sum(critical_mask, dim=1).clamp(min=1)
-                    corr = corr.unsqueeze(1)
-                    feat_raw = self.proj_pathfeat(corr)
-                    path_feat_l = th.cat((path_feat_l,feat_raw),dim=1)
-                elif self.path_feat_choice == 3:
-                    distance = (l + 1) * th.ones((path_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
-                    nodes_prob_l = graph.ndata['hp'][nodes]
-                    nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
-                    corr = th.sum(nodes_prob_l_tr * critical_mask, dim=1) / th.sum(critical_mask, dim=1).clamp(min=1)
-                    corr = corr.unsqueeze(1)
-                    feat_raw = self.proj_pathfeat(th.cat((distance,corr),dim=1))
-                    path_feat_l = th.cat((path_feat_l,feat_raw),dim=1)
+                distance = (l + 1) * th.ones((path_feat_l.shape[0], 1), dtype=th.float, device=graph.device)
+                nodes_prob_l = graph.ndata['hp'][nodes]
+                nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
+                corr = th.sum(nodes_prob_l_tr * critical_mask, dim=1) / critical_counts.clamp(min=1)
+                corr = corr.unsqueeze(1)
+                path_feat_l = self.append_path_context(path_feat_l, distance, corr)
 
-                path_feat_l = path_feat_l.reshape(path_feat_l.shape[0], 1, path_feat_l.shape[1])
-                path_feat = th.cat((path_feat, path_feat_l), dim=1)
+                path_feat[:, l + 1, :] = path_feat_l
 
-                if self.use_corr_pe or self.use_corr_bias:
-                    nodes_prob_l = graph.ndata['hp'][nodes]
-                    nodes_prob_l_tr = th.transpose(nodes_prob_l, 0, 1)  # N_ep * N_l
+                row_max = nodes_prob_l_tr.max(dim=1, keepdim=True).values
+                nodes_prob_l_tr = nodes_prob_l_tr / row_max.clamp(min=1e-8)
+                cs = th.sum(nodes_prob_l_tr * critical_mask, dim=1) / critical_counts.clamp(min=1)
 
-                    if self.path_corr_choice in [1,3]:
-                        row_max = nodes_prob_l_tr.max(dim=1, keepdim=True).values
-                        row_max_safe = row_max.clamp(min=1e-8)
-                        nodes_prob_l_tr = nodes_prob_l_tr / row_max_safe
-
-                    cs = th.sum(nodes_prob_l_tr * critical_mask, dim=1) / th.sum(critical_mask, dim=1).clamp(min=1)
-
-                    if self.path_corr_choice in [2,3]:
-                        cs = cs*(0.5+math.log(l+1,2))
-
-                    c_sink[:, l + 1] = cs
-                    cl = th.matmul(critical_mask.float(), graph.ndata['cl'][nodes]) / th.sum(critical_mask,
-                                                                                      dim=1).clamp(min=1)
-                    cl = cl.diagonal()
-                    c_local[:, l + 1] = cl
+                c_sink[:, l + 1] = cs
+                cl = th.matmul(critical_mask.float(), graph.ndata['cl'][nodes]) / critical_counts.clamp(min=1)
+                cl = cl.diagonal()
+                c_local[:, l + 1] = cl
 
                 if timed:
                     stage_time['CPE_preparefeat'] += time() - start
@@ -916,215 +703,532 @@ class BPN(nn.Module):
                 if timed:
                     stage_time['CPE_pathfind'] += time() - start
 
-        if self.use_corr_pe or self.use_corr_bias:
-            if timed:
-                start = time()
-            c_sink = c_sink[:, :l + 1]
-            c_local = c_local[:, :l + 1]
-            #input_delay =  path_inputdelay if self.path_delay_choice == 0 else None
-            path_emb = self.pathformer(path_feat, path_lengths, c_sink=c_sink, c_local=c_local)
-            if timed:
-                stage_time['CPE_encode'] += time() - start
+        path_feat = path_feat[:, :l + 1, :]
+        c_sink = c_sink[:, :l + 1]
+        c_local = c_local[:, :l + 1]
+        if debug_counts is not None:
+            graph_info['_cpe_dense_counts'] = debug_counts
+            graph_info['_cpe_dense_pairs'] = debug_pairs
 
+        return path_feat, path_lengths, path_inputdelay, c_sink, c_local
+
+    def path_search_sparse(self, graph, graph_info, stage_time=None):
+        timed = stage_time is not None
+        if timed:
+            start = time()
+        feat_p, po_count, path_feat, path_lengths, path_inputdelay, c_sink, c_local = \
+            self.init_path_buffers(graph, graph_info)
+        is_ended = th.zeros(po_count, dtype=th.bool, device=graph.device)
+        debug_counts = [] if getattr(options, 'log_level', 0) >= 2 else None
+        if timed:
+            stage_time['CPE_preparefeat'] += time() - start
+
+        with th.no_grad():
+            pre_nodes = graph_info['POs']
+            _, nodes = graph.out_edges(pre_nodes, etype='reverse')
+            nodes = th.unique(nodes)
+            l = 0
+
+            while True:
+                if timed:
+                    start = time()
+                if len(pre_nodes) != 0:
+                    graph.pull(pre_nodes, fn.copy_u('hp', 'p'), self.reduce_func_maxprob, etype='forward')
+
+                graph.pull(nodes, self.message_func_maxprob_r, self.reduce_func_maxprob_r, etype='reverse')
+
+                critical = graph.ndata['is_critical'][nodes]
+                node_pos, endpoint_idx = critical.nonzero(as_tuple=True)
+                counts = th.bincount(endpoint_idx, minlength=po_count).to(dtype=feat_p.dtype)
+                if debug_counts is not None:
+                    debug_counts.append(counts.detach().cpu())
+
+                is_ended_mask = th.logical_and(counts == 0, ~is_ended)
+                is_ended[is_ended_mask] = True
+                path_lengths[is_ended_mask] = l + 1
+                if timed:
+                    stage_time['CPE_pathfind'] += time() - start
+
+                if endpoint_idx.numel() == 0:
+                    break
+
+                if timed:
+                    start = time()
+                critical_nodes = nodes[node_pos]
+                counts_safe = counts.clamp(min=1)
+
+                path_feat_l = th.zeros((po_count, feat_p.shape[1]), dtype=feat_p.dtype, device=graph.device)
+                path_feat_l.index_add_(0, endpoint_idx, feat_p[critical_nodes])
+                path_feat_l = path_feat_l / counts_safe.unsqueeze(1)
+
+                delay_values = graph.ndata['delay'][critical_nodes].squeeze(1)
+                nodes_delay_l = th.zeros((po_count,), dtype=delay_values.dtype, device=graph.device)
+                nodes_delay_l.scatter_reduce_(0, endpoint_idx, delay_values, reduce='amax', include_self=True)
+                path_inputdelay = th.maximum(path_inputdelay, nodes_delay_l.unsqueeze(1))
+
+                distance = (l + 1) * th.ones((po_count, 1), dtype=th.float, device=graph.device)
+                prob_values = graph.ndata['hp'][critical_nodes, endpoint_idx]
+                corr_sum = th.zeros((po_count,), dtype=prob_values.dtype, device=graph.device)
+                corr_sum.index_add_(0, endpoint_idx, prob_values)
+                corr = (corr_sum / counts_safe).unsqueeze(1)
+                path_feat_l = self.append_path_context(path_feat_l, distance, corr)
+
+                path_feat[:, l + 1, :] = path_feat_l
+
+                row_max = graph.ndata['hp'][nodes].max(dim=0).values.clamp(min=1e-8)
+                cs_values = prob_values / row_max[endpoint_idx]
+                cs_sum = th.zeros((po_count,), dtype=cs_values.dtype, device=graph.device)
+                cs_sum.index_add_(0, endpoint_idx, cs_values)
+                c_sink[:, l + 1] = cs_sum / counts_safe
+
+                cl_values = graph.ndata['cl'][critical_nodes, endpoint_idx]
+                cl_sum = th.zeros((po_count,), dtype=cl_values.dtype, device=graph.device)
+                cl_sum.index_add_(0, endpoint_idx, cl_values)
+                c_local[:, l + 1] = cl_sum / counts_safe
+
+                if timed:
+                    stage_time['CPE_preparefeat'] += time() - start
+                    start = time()
+                filtered_mask = critical.any(dim=1)
+                pre_nodes = nodes[filtered_mask]
+                _, nodes = graph.out_edges(pre_nodes, etype='reverse')
+                nodes = th.unique(nodes)
+                l += 1
+                if timed:
+                    stage_time['CPE_pathfind'] += time() - start
+
+        path_feat = path_feat[:, :l + 1, :]
+        c_sink = c_sink[:, :l + 1]
+        c_local = c_local[:, :l + 1]
+        if debug_counts is not None:
+            graph_info['_cpe_sparse_counts'] = debug_counts
+
+        return path_feat, path_lengths, path_inputdelay, c_sink, c_local
+
+    def path_search_frontier(self, graph, graph_info, stage_time=None):
+        timed = stage_time is not None
+        if timed:
+            start = time()
+        feat_p, po_count, path_feat, path_lengths, path_inputdelay, c_sink, c_local = \
+            self.init_path_buffers(graph, graph_info)
+        is_ended = th.zeros(po_count, dtype=th.bool, device=graph.device)
+        debug_counts = [] if getattr(options, 'log_level', 0) >= 2 else None
+        debug_pairs = [] if getattr(options, 'log_level', 0) >= 2 else None
+        if timed:
+            stage_time['CPE_preparefeat'] += time() - start
+
+        with th.no_grad():
+            num_nodes = graph.number_of_nodes()
+            frontier_ep = th.arange(po_count, dtype=th.long, device=graph.device)
+            frontier_nodes = graph_info['POs']
+            critical_key = frontier_ep * num_nodes + frontier_nodes
+            critical_ep = frontier_ep.clone()
+            critical_nodes = frontier_nodes.clone()
+            critical_max = graph.ndata['hp'].new_zeros(critical_key.numel())
+            l = 0
+
+            while True:
+                if timed:
+                    start = time()
+
+                if frontier_nodes.numel() == 0:
+                    next_ep = frontier_ep.new_empty(0)
+                    next_nodes = frontier_nodes.new_empty(0)
+                    next_cl = graph.ndata['hp'].new_empty(0)
+                    candidate_nodes = frontier_nodes.new_empty(0)
+                else:
+                    active_nodes = th.unique(frontier_nodes)
+                    _, candidate_nodes = graph.out_edges(active_nodes, etype='reverse')
+                    candidate_nodes = th.unique(candidate_nodes)
+
+                    current_key = frontier_ep * num_nodes + frontier_nodes
+                    current_pos = th.searchsorted(critical_key, current_key)
+                    current_max = critical_max[current_pos].clone()
+
+                    degrees = graph.out_degrees(frontier_nodes, etype='reverse')
+                    edge_src, edge_dst, edge_eid = graph.out_edges(frontier_nodes, form='all', etype='reverse')
+                    if edge_dst.numel() != 0:
+                        current_pair_idx = th.arange(frontier_nodes.numel(), dtype=th.long,
+                                                     device=graph.device).repeat_interleave(degrees)
+                        if debug_counts is not None and not th.equal(edge_src, frontier_nodes[current_pair_idx]):
+                            print('CPE frontier debug: DGL out_edges order is not aligned with repeated frontier nodes',
+                                  flush=True)
+                        current_ep = frontier_ep[current_pair_idx]
+                        pred_prob = graph.ndata['hp'][edge_dst, current_ep]
+                        recomputed_max = th.full((frontier_nodes.numel(),), -float('inf'),
+                                                 dtype=pred_prob.dtype, device=graph.device)
+                        recomputed_max.scatter_reduce_(0, current_pair_idx, pred_prob,
+                                                       reduce='amax', include_self=True)
+                        has_fanin = degrees > 0
+                        current_max = th.where(has_fanin, recomputed_max, current_max)
+                        critical_max[current_pos] = current_max
+
+                    if candidate_nodes.numel() == 0:
+                        next_ep = frontier_ep.new_empty(0)
+                        next_nodes = frontier_nodes.new_empty(0)
+                        next_cl = graph.ndata['hp'].new_empty(0)
+                    else:
+                        candidate_mask = th.zeros((num_nodes,), dtype=th.bool, device=graph.device)
+                        candidate_mask[candidate_nodes] = True
+
+                        critical_degrees = graph.out_degrees(critical_nodes, etype='reverse')
+                        critical_edge_src, critical_edge_dst, critical_edge_eid = graph.out_edges(
+                            critical_nodes, form='all', etype='reverse')
+                        critical_pair_idx = th.arange(critical_nodes.numel(), dtype=th.long,
+                                                      device=graph.device).repeat_interleave(critical_degrees)
+                        if debug_counts is not None and critical_edge_dst.numel() != 0 and not th.equal(
+                                critical_edge_src, critical_nodes[critical_pair_idx]):
+                            print('CPE frontier debug: DGL out_edges order is not aligned with repeated critical nodes',
+                                  flush=True)
+
+                        edge_ep = critical_ep[critical_pair_idx]
+                        edge_max = critical_max[critical_pair_idx]
+                        pred_prob = graph.ndata['hp'][critical_edge_dst, edge_ep]
+                        in_candidate = candidate_mask[critical_edge_dst]
+                        is_critical_edge = th.logical_and(in_candidate, pred_prob == edge_max)
+                        is_critical_edge = th.logical_and(is_critical_edge, pred_prob != 0)
+                        selected_ep = edge_ep[is_critical_edge]
+                        if selected_ep.numel() == 0:
+                            next_ep = frontier_ep.new_empty(0)
+                            next_nodes = frontier_nodes.new_empty(0)
+                            next_cl = graph.ndata['hp'].new_empty(0)
+                        else:
+                            critical_dst = critical_edge_dst[is_critical_edge]
+                            critical_weight = graph.edges['reverse'].data['weight'][
+                                critical_edge_eid[is_critical_edge]].reshape(-1)
+
+                            pair_key = selected_ep * num_nodes + critical_dst
+                            unique_key, inverse = th.unique(pair_key, return_inverse=True)
+                            next_ep = unique_key // num_nodes
+                            next_nodes = unique_key % num_nodes
+                            next_cl = th.zeros((unique_key.numel(),), dtype=critical_weight.dtype, device=graph.device)
+                            next_cl.index_add_(0, inverse, critical_weight)
+
+                counts = th.bincount(next_ep, minlength=po_count).to(dtype=feat_p.dtype)
+                if debug_counts is not None:
+                    debug_counts.append(counts.detach().cpu())
+                    debug_pairs.append((next_ep.detach().cpu(), next_nodes.detach().cpu()))
+                is_ended_mask = th.logical_and(counts == 0, ~is_ended)
+                is_ended[is_ended_mask] = True
+                path_lengths[is_ended_mask] = l + 1
+                if timed:
+                    stage_time['CPE_pathfind'] += time() - start
+
+                if next_ep.numel() == 0:
+                    break
+
+                if timed:
+                    start = time()
+                counts_safe = counts.clamp(min=1)
+
+                path_feat_l = th.zeros((po_count, feat_p.shape[1]), dtype=feat_p.dtype, device=graph.device)
+                path_feat_l.index_add_(0, next_ep, feat_p[next_nodes])
+                path_feat_l = path_feat_l / counts_safe.unsqueeze(1)
+
+                delay_values = graph.ndata['delay'][next_nodes].squeeze(1)
+                nodes_delay_l = th.zeros((po_count,), dtype=delay_values.dtype, device=graph.device)
+                nodes_delay_l.scatter_reduce_(0, next_ep, delay_values, reduce='amax', include_self=True)
+                path_inputdelay = th.maximum(path_inputdelay, nodes_delay_l.unsqueeze(1))
+
+                distance = (l + 1) * th.ones((po_count, 1), dtype=th.float, device=graph.device)
+                prob_values = graph.ndata['hp'][next_nodes, next_ep]
+                corr_sum = th.zeros((po_count,), dtype=prob_values.dtype, device=graph.device)
+                corr_sum.index_add_(0, next_ep, prob_values)
+                corr = (corr_sum / counts_safe).unsqueeze(1)
+                path_feat_l = self.append_path_context(path_feat_l, distance, corr)
+
+                path_feat[:, l + 1, :] = path_feat_l
+
+                row_max = graph.ndata['hp'][candidate_nodes].max(dim=0).values.clamp(min=1e-8)
+                cs_values = prob_values / row_max[next_ep]
+                cs_sum = th.zeros((po_count,), dtype=cs_values.dtype, device=graph.device)
+                cs_sum.index_add_(0, next_ep, cs_values)
+                c_sink[:, l + 1] = cs_sum / counts_safe
+
+                cl_sum = th.zeros((po_count,), dtype=next_cl.dtype, device=graph.device)
+                cl_sum.index_add_(0, next_ep, next_cl)
+                c_local[:, l + 1] = cl_sum / counts_safe
+
+                if timed:
+                    stage_time['CPE_preparefeat'] += time() - start
+
+                frontier_ep = next_ep
+                frontier_nodes = next_nodes
+                next_key = frontier_ep * num_nodes + frontier_nodes
+                if next_key.numel() != 0:
+                    merged_key = th.cat((critical_key, next_key))
+                    merged_max = th.cat((critical_max, critical_max.new_zeros(next_key.numel())))
+                    critical_key, inverse = th.unique(merged_key, return_inverse=True)
+                    critical_max_new = th.full((critical_key.numel(),), -float('inf'),
+                                               dtype=critical_max.dtype, device=graph.device)
+                    critical_max_new.scatter_reduce_(0, inverse, merged_max, reduce='amax', include_self=True)
+                    critical_max = th.where(th.isinf(critical_max_new),
+                                            th.zeros_like(critical_max_new),
+                                            critical_max_new)
+                    critical_ep = critical_key // num_nodes
+                    critical_nodes = critical_key % num_nodes
+                l += 1
+
+        path_feat = path_feat[:, :l + 1, :]
+        c_sink = c_sink[:, :l + 1]
+        c_local = c_local[:, :l + 1]
+        if debug_counts is not None:
+            graph_info['_cpe_frontier_counts'] = debug_counts
+            graph_info['_cpe_frontier_pairs'] = debug_pairs
+
+        return path_feat, path_lengths, path_inputdelay, c_sink, c_local
+
+    def assert_same_path_inputs(self, dense_inputs, candidate_inputs, name):
+        names = ('path_feat', 'path_lengths', 'path_inputdelay', 'c_sink', 'c_local')
+        mismatches = []
+        for tensor_name, dense_value, candidate_value in zip(names, dense_inputs, candidate_inputs):
+            if dense_value.shape != candidate_value.shape:
+                mismatches.append(
+                    '{} shape {} != {}'.format(tensor_name, tuple(dense_value.shape), tuple(candidate_value.shape))
+                )
+                continue
+            if not th.allclose(dense_value, candidate_value, rtol=1e-4, atol=1e-5):
+                max_abs = th.max(th.abs(dense_value - candidate_value)).item()
+                detail = '{} max_abs={:.6g}'.format(tensor_name, max_abs)
+                if tensor_name == 'path_lengths':
+                    diff = candidate_value - dense_value
+                    bad_idx = th.nonzero(diff != 0).flatten()[:5]
+                    if bad_idx.numel() != 0:
+                        detail += ' sample={} dense={} candidate={}'.format(
+                            bad_idx.detach().cpu().numpy().tolist(),
+                            dense_value[bad_idx].detach().cpu().numpy().tolist(),
+                            candidate_value[bad_idx].detach().cpu().numpy().tolist(),
+                        )
+                mismatches.append(detail)
+
+        if mismatches:
+            raise ValueError('CPE {} implementation mismatch: {}'.format(name, '; '.join(mismatches)))
+
+    def reset_path_search_state(self, graph, initial_is_critical):
+        graph.ndata['is_critical'] = initial_is_critical.clone()
+        if 'max_prob' in graph.ndata:
+            graph.ndata['max_prob'] = th.zeros_like(graph.ndata['hp'])
+        if 'cl' in graph.ndata:
+            graph.ndata['cl'] = th.zeros_like(graph.ndata['hp'])
+
+    def path_embedding(self, graph, graph_info, stage_time=None):
+        cpe_impl = getattr(options, 'cpe_impl', 'dense')
+
+        if cpe_impl == 'dense':
+            path_inputs = self.path_search_dense(graph, graph_info, stage_time)
+        elif cpe_impl == 'sparse':
+            path_inputs = self.path_search_sparse(graph, graph_info, stage_time)
+        elif cpe_impl == 'frontier':
+            path_inputs = self.path_search_frontier(graph, graph_info, stage_time)
+        elif cpe_impl == 'compare':
+            initial_is_critical = graph.ndata['is_critical'].clone()
+            dense_inputs = self.path_search_dense(graph, graph_info, None)
+            self.reset_path_search_state(graph, initial_is_critical)
+            sparse_inputs = self.path_search_sparse(graph, graph_info, stage_time)
+            self.assert_same_path_inputs(dense_inputs, sparse_inputs, 'sparse')
+            self.reset_path_search_state(graph, initial_is_critical)
+            frontier_inputs = self.path_search_frontier(graph, graph_info, None)
+            if getattr(options, 'log_level', 0) >= 2 and not th.equal(dense_inputs[1], frontier_inputs[1]):
+                bad_idx = th.nonzero(frontier_inputs[1] != dense_inputs[1]).flatten()[:5]
+                dense_counts = graph_info.get('_cpe_dense_counts', [])
+                frontier_counts = graph_info.get('_cpe_frontier_counts', [])
+                dense_pairs = graph_info.get('_cpe_dense_pairs', [])
+                frontier_pairs = graph_info.get('_cpe_frontier_pairs', [])
+                def nodes_for_endpoint(pairs, endpoint):
+                    seq = []
+                    for eps, nodes in pairs:
+                        seq.append(nodes[eps == endpoint].numpy().tolist())
+                    return seq
+                for idx in bad_idx.detach().cpu().numpy().tolist():
+                    dense_seq = [int(c[idx].item()) for c in dense_counts]
+                    frontier_seq = [int(c[idx].item()) for c in frontier_counts]
+                    print('CPE frontier debug endpoint {} dense_len={} frontier_len={} dense_counts={} frontier_counts={} dense_nodes={} frontier_nodes={}'.format(
+                        idx,
+                        int(dense_inputs[1][idx].item()),
+                        int(frontier_inputs[1][idx].item()),
+                        dense_seq,
+                        frontier_seq,
+                        nodes_for_endpoint(dense_pairs, idx),
+                        nodes_for_endpoint(frontier_pairs, idx),
+                    ), flush=True)
+            self.assert_same_path_inputs(dense_inputs, frontier_inputs, 'frontier')
+            path_inputs = sparse_inputs
         else:
-            if timed:
-                start = time()
-            path_emb = self.pathformer(path_feat, path_lengths)
-            if timed:
-                stage_time['CPE_encode'] += time() - start
+            raise ValueError('Unknown CPE implementation: {}'.format(cpe_impl))
 
+        return self.encode_path_inputs(*path_inputs, stage_time=stage_time)
 
-        return path_emb, path_lengths,path_inputdelay
-        # return graph.ndata['hp'], graph.ndata['hd']
+    def mtde_forward_level_data(self, graph, graph_info, i, nodes, use_cache):
+        if use_cache:
+            cache = graph_info.get('mtde_forward_cache')
+            if cache is None:
+                raise ValueError('mtde_forward_cache was requested, but graph_info has no cached edge data')
+            return cache[i]
+
+        isModule_mask = graph.ndata['is_module'][nodes] == 1
+        isGate_mask = graph.ndata['is_module'][nodes] == 0
+        nodes_gate = nodes[isGate_mask]
+        nodes_module = nodes[isModule_mask]
+        return {
+            'nodes_gate': nodes_gate,
+            'gate_eids': graph.in_edges(nodes_gate, form='eid', etype='intra_gate'),
+            'gate_reverse_eids': graph.out_edges(nodes_gate, form='eid', etype='reverse'),
+            'nodes_module': nodes_module,
+            'module_eids': graph.in_edges(nodes_module, form='eid', etype='intra_module'),
+            'module_reverse_eids': graph.out_edges(nodes_module, form='eid', etype='reverse'),
+        }
+
+    def mtde_forward_once(self, graph, graph_info, use_cache=False):
+        topo = graph_info['topo']
+        PO_mask = graph_info['POs']
+
+        graph.edges['intra_module'].data['bit_position'] = graph.edges['intra_module'].data[
+            'bit_position'].unsqueeze(1)
+
+        reverse_weight = None
+        if self.flag_reverse or self.flag_path_supervise:
+            reverse_weight = th.zeros((graph.number_of_edges('reverse'), 1), dtype=th.float).to(self.device)
+            graph.edges['reverse'].data['weight'] = reverse_weight
+
+        # propagate messages in the topological order, from PIs to POs
+        for i, nodes in enumerate(topo):
+            # for PIs
+            if i == 0:
+                graph.apply_nodes(self.nodes_func_pi, nodes)
+                continue
+
+            level_data = self.mtde_forward_level_data(graph, graph_info, i, nodes, use_cache)
+            nodes_gate = level_data['nodes_gate']
+            nodes_module = level_data['nodes_module']
+
+            if len(nodes_gate) != 0:
+                eids = level_data['gate_eids']
+                graph.apply_edges(self.edge_msg_gate, eids, etype='intra_gate')
+                graph.pull(nodes_gate, self.message_func_gate, self.reduce_func_attn_g, self.nodes_func_gate,
+                           etype='intra_gate')
+
+                eids_r = level_data['gate_reverse_eids']
+                graph.apply_edges(self.edge_msg_gate_weight, eids, etype='intra_gate')
+                graph.edges['reverse'].data['weight'][eids_r] = graph.edges['intra_gate'].data['weight'][eids]
+            if len(nodes_module) != 0:
+                eids = level_data['module_eids']
+                graph.pull(nodes_module, fn.copy_e('bit_position', 'pos'), fn.mean('pos', 'width2'),
+                           etype='intra_module')
+                graph.apply_edges(self.edge_msg_module, eids, etype='intra_module')
+                graph.pull(nodes_module, self.message_func_module, self.reduce_func_attn_m,
+                           self.nodes_func_module, etype='intra_module')
+
+                graph.apply_edges(self.edge_msg_module_weight, eids, etype='intra_module')
+                eids_r = level_data['module_reverse_eids']
+                graph.edges['reverse'].data['weight'][eids_r] = graph.edges['intra_module'].data['weight'][eids]
+
+        h_gnn = graph.ndata['h'][PO_mask]
+        if self.flag_reverse or self.flag_path_supervise:
+            reverse_weight = graph.edges['reverse'].data['weight']
+        return h_gnn, reverse_weight
+
+    def mtde_forward(self, graph, graph_info):
+        mtde_forward_cache = getattr(options, 'mtde_forward_cache', 'off')
+        if mtde_forward_cache == 'off':
+            return self.mtde_forward_once(graph, graph_info, use_cache=False)[0]
+        if mtde_forward_cache == 'cache':
+            return self.mtde_forward_once(graph, graph_info, use_cache=True)[0]
+        if mtde_forward_cache == 'compare':
+            with graph.local_scope():
+                ref_h, ref_weight = self.mtde_forward_once(graph, graph_info, use_cache=False)
+                ref_h = ref_h.clone()
+                ref_weight = ref_weight.clone() if ref_weight is not None else None
+
+            cached_h, cached_weight = self.mtde_forward_once(graph, graph_info, use_cache=True)
+            if not th.allclose(ref_h, cached_h, rtol=1e-4, atol=1e-5):
+                max_abs = th.max(th.abs(ref_h - cached_h)).item()
+                raise ValueError('MTDE forward cache mismatch: h_gnn max_abs={:.6g}'.format(max_abs))
+            if ref_weight is not None and not th.allclose(ref_weight, cached_weight, rtol=1e-4, atol=1e-5):
+                max_abs = th.max(th.abs(ref_weight - cached_weight)).item()
+                raise ValueError('MTDE forward cache mismatch: reverse.weight max_abs={:.6g}'.format(max_abs))
+            return cached_h
+        raise ValueError('Unknown MTDE forward cache mode: {}'.format(mtde_forward_cache))
 
     def forward(self, graph, graph_info,flag_meta=False,stage_time=None):
         timed = stage_time is not None
-
-        topo = graph_info['topo']
-        PO_mask = graph_info['POs']
 
         with (graph.local_scope()):
             # stage 1: MDTE
             if timed:
                 start = time()
-            graph.edges['intra_module'].data['bit_position'] = graph.edges['intra_module'].data[
-                'bit_position'].unsqueeze(1)
-
-            if self.flag_reverse or self.flag_path_supervise:
-                graph.edges['reverse'].data['weight'] = th.zeros((graph.number_of_edges('reverse'), 1),
-                                                                 dtype=th.float).to(self.device)
-            # propagate messages in the topological order, from PIs to POs
-            for i, nodes in enumerate(topo):
-                isModule_mask = graph.ndata['is_module'][nodes] == 1
-                isGate_mask = graph.ndata['is_module'][nodes] == 0
-
-                # for PIs
-                if i == 0:
-                    graph.apply_nodes(self.nodes_func_pi, nodes)
-                # for other nodes
-                else:
-                    nodes_gate = nodes[isGate_mask]
-                    nodes_module = nodes[isModule_mask]
-                    message_func_gate = self.message_func_gate if self.attn_choice == 0 else fn.copy_src('h', 'm')
-                    reduce_func_gate = self.reduce_func_attn_g if self.attn_choice == 0 else self.reduce_func_smoothmax
-
-                    if len(nodes_gate) != 0:
-                        if self.attn_choice == 0:
-                            eids = graph.in_edges(nodes_gate, form='eid', etype='intra_gate')
-                            graph.apply_edges(self.edge_msg_gate, eids, etype='intra_gate')
-                        graph.pull(nodes_gate, message_func_gate, reduce_func_gate, self.nodes_func_gate,
-                                   etype='intra_gate')
-
-                        if self.flag_reverse or self.flag_path_supervise:
-                            eids = graph.in_edges(nodes_gate, form='eid', etype='intra_gate')
-                            eids_r = graph.out_edges(nodes_gate, form='eid', etype='reverse')
-                            graph.apply_edges(self.edge_msg_gate_weight, eids, etype='intra_gate')
-                            if self.attn_choice == 0:
-                                graph.edges['reverse'].data['weight'][eids_r] = \
-                                    graph.edges['intra_gate'].data['weight'][eids]
-                            elif self.attn_choice == 1:
-                                graph.edges['reverse'].data['weight'][eids_r] = \
-                                    graph.edges['intra_gate'].data['weight'][eids].unsqueeze(1)
-
-                            if self.flag_delay: graph.pull(nodes_gate, self.message_func_delay,
-                                                           self.reduce_func_delay_g,
-                                                           etype='intra_gate')
-                    if len(nodes_module) != 0:
-                        eids = graph.in_edges(nodes_module, form='eid', etype='intra_module')
-                        graph.pull(nodes_module, fn.copy_e('bit_position', 'pos'), fn.mean('pos', 'width2'),
-                                   etype='intra_module')
-                        graph.apply_edges(self.edge_msg_module, eids, etype='intra_module')
-                        graph.pull(nodes_module, self.message_func_module, self.reduce_func_attn_m,
-                                   self.nodes_func_module, etype='intra_module')
-
-                        if self.flag_reverse or self.flag_path_supervise:
-                            graph.apply_edges(self.edge_msg_module_weight, eids, etype='intra_module')
-                            eids_r = graph.out_edges(nodes_module, form='eid', etype='reverse')
-                            graph.edges['reverse'].data['weight'][eids_r] = graph.edges['intra_module'].data['weight'][
-                                eids]
-
-                            if self.flag_delay: graph.pull(nodes_module, self.message_func_delay,
-                                                           self.reduce_func_delay_m, etype='intra_module')
-
-
-            h_gnn = graph.ndata['h'][PO_mask]
+            h_gnn = self.mtde_forward(graph, graph_info)
             if timed:
                 stage_time['MTDE_forward'] += time() - start
 
-            h = None if self.flag_noTPE else h_gnn
+            h = h_gnn
 
             rst = None
-            #rst = self.mlp_out(h_gnn)
-
             prob_sum, prob_dev, prob_ce = th.tensor([0.0]), th.tensor([0.0]), th.tensor([0.0])
             POs_criticalprob = None
             rst_residual, path_inputdelay = None, None
             metadata = None
 
-            if self.flag_reverse or self.flag_path_supervise:
-                if timed:
-                    start = time()
-                if self.use_pathgnn:
-                    gnn_input = th.cat((graph.ndata['feat'], graph.ndata['degree']), dim=1) if self.flag_degree else \
-                    graph.ndata['feat']
-                    # gnn_input = graph.ndata['feat']
-                    graph_info['nodes_emb'] = self.gnn_pathfeat(graph, gnn_input)
-                else:
-                    graph_info['nodes_emb'] = graph.ndata['h']
-                if timed:
-                    stage_time['FSE'] += time() - start
+            if timed:
+                start = time()
+            graph_info['nodes_emb'] = self.gnn_pathfeat(graph, graph.ndata['feat'])
+            if timed:
+                stage_time['FSE'] += time() - start
 
-                POs_criticalprob = None
-                POs = graph_info['POs']
-                h_path = None
+            POs = graph_info['POs']
 
-                if timed:
-                    start = time()
-                if self.flag_transformer in [2, 3, 4]:
-                    nodes_prob, h_path = self.prop_backward_new(graph, graph_info)
-                else:
-                    nodes_prob = self.prop_backward(graph, graph_info)
-                if timed:
-                    stage_time['MTDE_backward'] += time() - start
+            if timed:
+                start = time()
+            nodes_prob = self.prop_backward(graph, graph_info)
+            if timed:
+                stage_time['MTDE_backward'] += time() - start
 
-                if self.flag_path_supervise:
-                    graph.ndata['hp'] = nodes_prob
-                    graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(self.device)
-                    graph.ndata['id'][POs] = th.tensor(range(len(POs)), dtype=th.int64).unsqueeze(-1).to(self.device)
-                    graph.pull(POs, self.message_func_prob, self.reduce_func_prob, etype='pi2po')
-                    POs_criticalprob = graph.ndata['prob_sum'][POs]
-                    prob_sum = graph.ndata['prob_sum'][POs]
-                    prob_dev = graph.ndata['prob_dev'][POs]
-                    prob_ce = graph.ndata['prob_ce'][POs]
+            graph.ndata['hp'] = nodes_prob
+            graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(self.device)
+            graph.ndata['id'][POs] = th.arange(len(POs), dtype=th.int64, device=self.device).unsqueeze(-1)
+            graph.pull(POs, self.message_func_prob, self.reduce_func_prob, etype='pi2po')
+            POs_criticalprob = graph.ndata['prob_sum'][POs]
+            prob_sum = graph.ndata['prob_sum'][POs]
+            prob_dev = graph.ndata['prob_dev'][POs]
+            prob_ce = graph.ndata['prob_ce'][POs]
 
-                if not self.flag_reverse:
-                    output = (rst, rst_residual, path_inputdelay, prob_sum, prob_dev, prob_ce, POs_criticalprob, metadata)
-                    return output + (stage_time,) if timed else output
+            # stage 2: generate the FSE
+            if timed:
+                start = time()
+            PIs_mask = graph.ndata['is_pi'] == 1
+            nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
+            graph_info['PO2node_prob'] = nodes_prob_tr
 
-                # stage 2: generate the FSE
-                if timed:
-                    start = time()
-                PIs_mask = graph.ndata['is_pi'] == 1
-                PIs_prob = th.transpose(nodes_prob[PIs_mask], 0, 1)
+            h_global = th.matmul(nodes_prob_tr, graph_info['nodes_emb'])
+            h_etp = self.mlp_probinfo(
+                -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
+            h_global = th.cat((h_global, h_etp), dim=1)
 
-                nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
+            etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+            minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
+            w = self.mlp_w2(th.cat((etp, minmax), dim=1))
+            h = th.cat((h, w * h_global), dim=1)
+            if timed:
+                stage_time['FSE'] += time() - start
 
-                graph_info['PO2node_prob'] = nodes_prob_tr
+            # stage 3: generate CPE
+            path_emb, path_lengths, path_inputdelay = self.path_embedding(graph, graph_info, stage_time if timed else None)
+            rst_residual = self.mlp_out_residual(path_emb)
+            delay_emb = self.linear_delay(path_inputdelay)
+            h = th.cat((h, path_emb, delay_emb), dim=1)
 
-                if not self.flag_noFSE:
-                    h_global = th.matmul(nodes_prob_tr, graph_info['nodes_emb'])
+            # stage 4: projection
+            if timed:
+                start = time()
+            rst = self.mlp_out_new(h)
+            if timed:
+                stage_time['proj'] += time() - start
 
-                    path_emb, path_lengths, path_inputdelay = None, None, None
-                    # h_global2 = th.matmul(nodes_prob_tr, graph.ndata['h'])
-                    # print(h_global.shape,h_global2.shape)
-                    h_etp = self.mlp_probinfo(
-                        -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
-                    h_global = th.cat((h_global, h_etp), dim=1)
-
-                    etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-                    minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
-                    w = self.mlp_w2(th.cat((etp, minmax), dim=1))
-                    h = th.cat((h, w * h_global), dim=1) if h is not None else w * h_global
-                if timed:
-                    stage_time['FSE'] += time() - start
-
-                # stage 3: generate CPE
-                if self.flag_transformer != 0:
-                    path_emb, path_lengths, path_inputdelay = self.path_embedding(graph, graph_info, stage_time if timed else None)
-                    if self.flag_residual:
-                        rst_residual = self.mlp_out_residual(path_emb)
-
-                    delay_emb = self.linear_delay(path_inputdelay) if self.path_delay_choice in [1, 2,
-                                                                                                 3] else path_inputdelay
-                    if self.path_delay_choice in [1, 4]:
-                        h_pathW = path_emb + delay_emb
-                    elif self.path_delay_choice in [2, 5]:
-                        h_pathW = self.activation(path_emb + delay_emb)
-                    elif self.path_delay_choice in [3, 6]:
-                        h_pathW = th.cat((path_emb, delay_emb), dim=1)
-                    elif self.path_delay_choice in [7]:
-                        h_pathW = th.cat((path_emb, rst_residual + path_inputdelay), dim=1)
-                    else:
-                        h_pathW = path_emb
-
-                    h = th.cat((h, h_pathW), dim=1)
-
-                # stage 4: projection
-                if timed:
-                    start = time()
-                rst = self.mlp_out_new(h)
-                if timed:
-                    stage_time['proj'] += time() - start
-
-                if flag_meta:
-                    metadata = extract_endpoint_metadata(graph, nodes_prob, PIs_mask)
-                    metadata['critical_input_arrival'] = path_inputdelay.squeeze(1)
-                    metadata['critical_path_length'] = path_lengths
-                    for key, value in metadata.items():
-                        metadata[key] = value.reshape((len(value), 1))
-
-                output = (rst, rst_residual, path_inputdelay, prob_sum, prob_dev, prob_ce, POs_criticalprob, metadata)
-                return output + (stage_time,) if timed else output
+            if flag_meta:
+                metadata = extract_endpoint_metadata(graph, nodes_prob, PIs_mask)
+                metadata['critical_input_arrival'] = path_inputdelay.squeeze(1)
+                metadata['critical_path_length'] = path_lengths
+                for key, value in metadata.items():
+                    metadata[key] = value.reshape((len(value), 1))
 
             output = (rst, rst_residual, path_inputdelay, prob_sum, prob_dev, prob_ce, POs_criticalprob, metadata)
             return output + (stage_time,) if timed else output

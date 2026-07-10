@@ -7,6 +7,14 @@ def get_options(args=None):
     parser.add_argument('--base_pe', type=int, default=1)
     parser.add_argument('--log_level', type=int, default=0,
                         help='0: no runtime/statistics logging; 1: enable runtime breakdown and extra test statistics')
+    parser.add_argument('--cuda_blocking', action='store_true',
+                        help='debug only: set CUDA_LAUNCH_BLOCKING=1 before CUDA initialization')
+    parser.add_argument('--cpe_impl', type=str, default='frontier', choices=['dense', 'sparse', 'frontier', 'compare'],
+                        help='CPE path-search implementation: dense keeps the original behavior; sparse uses sparse aggregation; frontier uses sparse endpoint-node frontiers; compare checks all implementations on the same batch')
+    parser.add_argument('--mtde_backward_impl', type=str, default='scatter', choices=['dgl', 'scatter', 'compare'],
+                        help='MTDE backward correlation propagation: dgl keeps the original DGL pull path; scatter uses cached reverse edges; compare checks both on the same batch')
+    parser.add_argument('--mtde_forward_cache', type=str, default='cache', choices=['off', 'cache', 'compare'],
+                        help='MTDE forward topology-edge lookup cache: off keeps original graph queries; cache reuses cached eids; compare checks cached and original outputs')
     parser.add_argument('--flag_noTPE', action='store_true')
     parser.add_argument('--flag_noFSE', action='store_true')
     parser.add_argument('--use_corr_pe',action='store_true')
@@ -62,6 +70,16 @@ def get_options(args=None):
     # parser.add_argument("--batch_size_po", type=int, help='the maximum number of PO in each batch. Type: int',
     #                     default=64)
     parser.add_argument("--num_epoch", type=int, help='Type: int; number of epoches that the training procedure runs. Type: int',default=2000)
+    parser.add_argument("--eval_every", type=int, default=1,
+                        help='run validation/test every N epochs; <=0 disables periodic evaluation')
+    parser.add_argument("--debug_case_limit", type=int, default=0,
+                        help='debug only: cap timing cases per design when >0')
+    parser.add_argument("--max_train_batches", type=int, default=0,
+                        help='debug only: stop each epoch after this many train batches when >0')
+    parser.add_argument("--po_batch_size", type=int, default=0,
+                        help='training PO batch size override; <=0 keeps the original dynamic TCAD6 setting')
+    parser.add_argument("--po_batch_node_budget", type=int, default=200000000,
+                        help='training memory guard: cap num_nodes * po_batch_size when >0; set 0 to disable')
     parser.add_argument("--in_dim", type=int, help='the dimension of the input feature. Type: int',default=9)
     parser.add_argument("--out_dim", type=int, help='the dimension of the output embedding. Type: int', default=128)
     parser.add_argument("--hidden_dim", type=int, help='the dimension of the intermediate GNN layers. Type: int',default=128)

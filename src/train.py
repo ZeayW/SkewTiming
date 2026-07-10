@@ -1,3 +1,9 @@
+import os
+import sys
+
+if '--cuda_blocking' in sys.argv:
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
 import matplotlib.pyplot as plt
 import torch
 from queue import Queue
@@ -6,7 +12,7 @@ from options import *
 from model2 import *
 import pickle
 import numpy as np
-import os
+import copy
 from random import shuffle
 import random
 import torch as th
@@ -22,8 +28,6 @@ import tee
 from utils import *
 from time import time
 import itertools
-
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
 options = get_options()
@@ -51,6 +55,111 @@ def new_stage_time():
     }
 
 
+def new_train_profile():
+    profile = new_stage_time()
+    profile.update({
+        'batch_graph': 0,
+        'gather_data': 0,
+        'model_forward': 0,
+        'loss_metric': 0,
+        'backward_step': 0,
+        'graph_mutation': 0,
+    })
+    return profile
+
+
+def sync_timer_start():
+    if device.type == 'cuda':
+        th.cuda.synchronize(device)
+    return time()
+
+
+def sync_timer_add(profile, key, start):
+    if device.type == 'cuda':
+        th.cuda.synchronize(device)
+    profile[key] += time() - start
+
+
+def add_stage_time(profile, stage_time):
+    for key, value in stage_time.items():
+        if key in profile:
+            profile[key] += value
+
+
+def format_profile(profile):
+    train_keys = ('batch_graph', 'gather_data', 'model_forward', 'loss_metric',
+                  'backward_step', 'graph_mutation')
+    model_keys = ('MTDE_forward', 'MTDE_backward', 'FSE', 'CPE_preparefeat',
+                  'CPE_pathfind', 'CPE_encode', 'proj', 'other')
+    train_total = sum(profile[key] for key in train_keys)
+    model_total = sum(profile[key] for key in model_keys)
+
+    train_parts = []
+    for key in train_keys:
+        value = profile[key]
+        pct = 100 * value / train_total if train_total > 0 else 0
+        train_parts.append('{}={:.2f}s/{:.1f}%'.format(key, value, pct))
+
+    model_parts = []
+    for key in model_keys:
+        value = profile[key]
+        pct = 100 * value / model_total if model_total > 0 else 0
+        model_parts.append('{}={:.2f}s/{:.1f}%'.format(key, value, pct))
+
+    return 'Profile train: {}, train_total={:.2f}s\nProfile model: {}, model_stage_total={:.2f}s'.format(
+        ', '.join(train_parts),
+        train_total,
+        ', '.join(model_parts),
+        model_total,
+    )
+
+
+TCAD6_OPTION_CONFIG = {
+    'hidden_dim': 128,
+    'base_pe': 2,
+    'flag_noTPE': False,
+    'flag_noFSE': False,
+    'flag_residual': True,
+    'use_pathgnn': True,
+    'path_feat_choice': 3,
+    'path_corr_choice': 1,
+    'path_delay_choice': 3,
+    'use_corr_pe': True,
+    'use_attn_bias': True,
+    'flag_gt': False,
+    'flag_transformer': 1,
+    'flag_rawpath': True,
+    'flag_singlepath': False,
+    'flag_delay': False,
+    'flag_degree': False,
+    'flag_width': True,
+    'flag_path_supervise': True,
+    'flag_reverse': True,
+    'split_feat': False,
+    'agg_choice': 0,
+    'attn_choice': 0,
+    'alpha': 5.0,
+    'beta': 5.0,
+    'global_info_choice': 12,
+    'global_cat_choice': 10,
+    'flag_filter': True,
+    'flag_alternate': False,
+    'pretrain_dir': None,
+    'flag_continue_trainpath': False,
+}
+
+
+def validate_tcad6_options(opts):
+    for name, expected in TCAD6_OPTION_CONFIG.items():
+        value = getattr(opts, name)
+        if value != expected:
+            raise ValueError(
+                '{}={} is no longer supported by the refactored main model. '
+                'Use src/scripts/run_train_tcad6.sh as the canonical configuration '
+                '({}={}).'.format(name, value, name, expected)
+            )
+
+
 with open(options.ntype_file, 'rb') as f:
     ntype2id, ntype2id_gate, ntype2id_module = pickle.load(f)
 num_gate_types = len(ntype2id_gate)
@@ -76,6 +185,7 @@ def load_data(usage,options):
     assert usage in ['train','val','test']
 
     designs_group = None
+    needs_design_groups = usage == 'test' and (options.test_iter or options.flag_group) and not options.flag_meta
     data_path = options.data_savepath
     if data_path.endswith('/'):
         data_path = data_path[:-1]
@@ -84,7 +194,7 @@ def load_data(usage,options):
         split_file = os.path.join(data_path, 'split.pkl')
     else:
         split_file = os.path.join(os.path.split(data_path)[0], 'split_new.pkl')
-        if not options.flag_meta:
+        if needs_design_groups:
             with open('designs_group_new.pkl', 'rb') as f:
                 designs_group = pickle.load(f)
 
@@ -208,6 +318,7 @@ def get_idx_loader(data,batch_size,flag_train):
 
 def init_model(options):
     if options.flag_baseline == -1:
+        validate_tcad6_options(options)
         if options.base_pe == 0:
             base_pe = 'none'
         elif options.base_pe == 1:
@@ -221,32 +332,11 @@ def init_model(options):
                 infeat_dim2=num_module_types,
                 hidden_dim=options.hidden_dim,
                 device=device,
-                global_cat_choice=options.global_cat_choice,
-                global_info_choice= options.global_info_choice,
                 alpha = options.alpha,
                 beta = options.beta,
-                flag_noFSE= options.flag_noFSE,
-                flag_noTPE=options.flag_noTPE,
-                flag_residual=options.flag_residual,
-                use_pathgnn = options.use_pathgnn,
-                path_feat_choice=options.path_feat_choice,
-                path_corr_choice = options.path_corr_choice,
-                path_delay_choice= options.path_delay_choice,
                 base_pe=base_pe,
-                use_attn_bias=options.use_attn_bias,
-                use_corr_pe=options.use_corr_pe,
-                flag_transformer=options.flag_transformer,
-                flag_gt = options.flag_gt,
-                flag_rawpath = options.flag_rawpath,
-                flag_singlepath=options.flag_singlepath,
-                flag_delay=options.flag_delay,
-                flag_degree=options.flag_degree,
-                flag_width=options.flag_width,
                 flag_path_supervise=options.flag_path_supervise,
                 flag_reverse=options.flag_reverse,
-                flag_splitfeat=options.split_feat,
-                agg_choice=options.agg_choice,
-                attn_choice=options.attn_choice,
             ).to(device)
     elif  options.flag_baseline == 0:
         model = ACCNN(infeat_dim=num_gate_types+num_module_types,
@@ -280,15 +370,15 @@ def init(seed):
 
 def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
 
-    POs_label_all, PIs_delay_all = None, None
+    POs_label_chunks, PIs_delay_chunks = [], []
     start_idx = 0
     new_edges = ([], [])
-    new_edges_weight = None
+    new_edges_weight_chunks = []
     for data in sampled_data:
         PIs_delay, POs_label, _, pi2po_edges = data['delay-label_pairs'][idx][:4]
 
-        POs_label_all = cat_tensor(POs_label_all, th.tensor(POs_label, dtype=th.float).unsqueeze(-1).to(device))
-        PIs_delay_all = cat_tensor(PIs_delay_all, th.tensor(PIs_delay, dtype=th.float).unsqueeze(-1).to(device))
+        POs_label_chunks.append(th.as_tensor(POs_label, dtype=th.float, device=device).unsqueeze(-1))
+        PIs_delay_chunks.append(th.as_tensor(PIs_delay, dtype=th.float, device=device).unsqueeze(-1))
 
         graph = data['graph']
         # collect the new edges from critical PIs to PO
@@ -296,26 +386,22 @@ def gather_data(sampled_data,sampled_graphs,graphs_info,idx,flag_addedge):
             new_edges[0].extend([nid + start_idx for nid in pi2po_edges[0]])
             new_edges[1].extend([nid + start_idx for nid in pi2po_edges[1]])
             if len(pi2po_edges)==3:
-                pi_delays = th.tensor(pi2po_edges[2],dtype=th.float,device=device)
-                pi_weights = pi_delays
-
-                if new_edges_weight is None:
-                    new_edges_weight = pi_weights
-                else:
-                    new_edges_weight = th.cat((new_edges_weight,pi_weights),dim=0)
-                #new_edges_weight.extend(pi2po_edges[2])
+                new_edges_weight_chunks.append(th.as_tensor(pi2po_edges[2], dtype=th.float, device=device))
 
         start_idx += graph.number_of_nodes()
 
+    POs_label_all = th.cat(POs_label_chunks, dim=0)
+    PIs_delay_all = th.cat(PIs_delay_chunks, dim=0)
+
     if flag_addedge:
         new_edges_feat = {}
-        if len(new_edges_weight) > 0:
-            new_edges_feat = {'w': new_edges_weight}
-        sampled_graphs.add_edges(th.tensor(new_edges[0]).to(device), th.tensor(new_edges[1]).to(device),
+        if new_edges_weight_chunks:
+            new_edges_feat = {'w': th.cat(new_edges_weight_chunks, dim=0)}
+        sampled_graphs.add_edges(th.as_tensor(new_edges[0], device=device), th.as_tensor(new_edges[1], device=device),
                                  data=new_edges_feat,etype='pi2po')
 
 
-    sampled_graphs.ndata['delay'] = th.zeros((sampled_graphs.number_of_nodes(), 1), dtype=th.float).to(device)
+    sampled_graphs.ndata['delay'] = th.zeros((sampled_graphs.number_of_nodes(), 1), dtype=th.float, device=device)
     sampled_graphs.ndata['delay'][sampled_graphs.ndata['is_pi'] == 1] = PIs_delay_all
     # sampled_graphs.ndata['input_delay'] = th.zeros((sampled_graphs.number_of_nodes(), 1), dtype=th.float).to(device)
     # sampled_graphs.ndata['input_delay'][sampled_graphs.ndata['is_pi'] == 1] = PIs_delay_all
@@ -330,28 +416,46 @@ def get_batched_data(graphs,po_batch_size=2048):
 
     sampled_graphs = dgl.batch(graphs)
     sampled_graphs = sampled_graphs.to(device)
-    nodes_list = th.tensor(range(sampled_graphs.number_of_nodes())).to(device)
+    nodes_list = th.arange(sampled_graphs.number_of_nodes(), device=device)
     POs = nodes_list[sampled_graphs.ndata['is_po'] == 1]
-    POs_list = POs.cpu().numpy().tolist()
 
     POs_batches = []
-    if len(POs)>po_batch_size:
-        num_batch = int(len(POs)/po_batch_size)+1
-        for b in range(num_batch):
-            batched_POs_list = POs_list[b*po_batch_size:(b+1)*po_batch_size]
-            POs_mask = list(range(b*po_batch_size,min((b+1)*po_batch_size,len(POs_list))))
-            POs_batches.append((th.tensor(batched_POs_list).to(device),POs_mask))
-    else:
-        POs_mask = list(range(len(POs)))
-        POs_batches.append((POs,POs_mask))
+    num_pos = len(POs)
+    for start in range(0, num_pos, po_batch_size):
+        end = min(start + po_batch_size, num_pos)
+        POs_batches.append((POs[start:end], th.arange(start, end, device=device)))
     
     
     graphs_info = {}
     topo_levels = gen_topo(sampled_graphs)
     graphs_info['is_heter'] = is_heter(sampled_graphs)
     graphs_info['topo'] = [l.to(device) for l in topo_levels]
+    if getattr(options, 'mtde_forward_cache', 'off') in ['cache', 'compare']:
+        mtde_forward_cache = []
+        for i, nodes in enumerate(graphs_info['topo']):
+            entry = {'nodes': nodes}
+            if i != 0:
+                isModule_mask = sampled_graphs.ndata['is_module'][nodes] == 1
+                isGate_mask = sampled_graphs.ndata['is_module'][nodes] == 0
+                nodes_gate = nodes[isGate_mask]
+                nodes_module = nodes[isModule_mask]
+                entry.update({
+                    'nodes_gate': nodes_gate,
+                    'gate_eids': sampled_graphs.in_edges(nodes_gate, form='eid', etype='intra_gate'),
+                    'gate_reverse_eids': sampled_graphs.out_edges(nodes_gate, form='eid', etype='reverse'),
+                    'nodes_module': nodes_module,
+                    'module_eids': sampled_graphs.in_edges(nodes_module, form='eid', etype='intra_module'),
+                    'module_reverse_eids': sampled_graphs.out_edges(nodes_module, form='eid', etype='reverse'),
+                })
+            mtde_forward_cache.append(entry)
+        graphs_info['mtde_forward_cache'] = mtde_forward_cache
     topo_r = gen_topo(sampled_graphs, flag_reverse=True)
     graphs_info['topo_r'] = [l.to(device) for l in topo_r]
+    if 'reverse' in sampled_graphs.etypes and options.mtde_backward_impl in ['scatter', 'compare']:
+        graphs_info['topo_r_in_edges'] = [
+            tuple(t.to(device) for t in sampled_graphs.in_edges(nodes, form='all', etype='reverse'))
+            for nodes in graphs_info['topo_r'][1:]
+        ]
     # level = gen_level(sampled_graphs)
     # graphs_info['level'] = [l.to(device) for l in level]
     #graphs_info['level'] = [[l[0].to(device),l[1].to(device),l[2].to(device)] for l in level]
@@ -359,17 +463,36 @@ def get_batched_data(graphs,po_batch_size=2048):
     
     return sampled_graphs,graphs_info
 
+def select_train_po_batch_size(num_nodes, num_pos):
+    if options.po_batch_size > 0:
+        return options.po_batch_size
+
+    po_bs = 1200
+    if num_nodes > 180000 or (num_nodes > 145000 and num_pos > 800):
+        po_bs = min(po_bs, max(256, int(num_pos / 2)))
+
+    node_budget = getattr(options, 'po_batch_node_budget', 0)
+    if node_budget > 0 and num_nodes > 0:
+        po_bs = min(po_bs, max(256, int(node_budget / num_nodes)))
+
+    if num_pos > 0:
+        po_bs = min(po_bs, num_pos)
+    return max(1, int(po_bs))
+
 def init_criticality_matrix(graph,POs):
 
-    graph.ndata['hp'] = th.zeros((graph.number_of_nodes(), len(POs)), dtype=th.float).to(device)
-    for k, po in enumerate(POs.detach().cpu().numpy().tolist()):
-        graph.ndata['hp'][po][k] = 1
+    graph.ndata['hp'] = th.zeros((graph.number_of_nodes(), len(POs)), dtype=th.float, device=device)
+    graph.ndata['hp'][POs, th.arange(len(POs), device=device)] = 1
     graph.ndata['is_critical'] = graph.ndata['hp'].bool()
 
     return graph
 
 def cal_metrics(labels_hat,labels):
-    r2 = R2_score(labels_hat, labels).item()
+    labels_hat_flat = labels_hat.reshape(-1)
+    labels_flat = labels.reshape(-1)
+    ss_res = th.sum((labels_flat - labels_hat_flat) ** 2)
+    ss_tot = th.sum((labels_flat - th.mean(labels_flat)) ** 2)
+    r2 = (1 - ss_res / ss_tot.clamp(min=1e-12)).item()
     mape = th.mean(th.abs(labels_hat[labels != 0] - labels[labels != 0]) / labels[labels != 0])
     ratio = labels_hat[labels != 0] / labels[labels != 0]
     min_ratio = th.min(ratio)
@@ -404,7 +527,7 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batchsize)
 
             for POs,POs_mask in graphs_info['POs_batches']:
-                POs_mask = th.tensor(POs_mask).to(device)
+                POs_mask = POs_mask.to(device) if th.is_tensor(POs_mask) else th.tensor(POs_mask, device=device)
                 #print(len(POs),len(POs_mask))
                 # if len(POs)<2000:
                 #     exit()
@@ -431,12 +554,6 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                     labels = cat_tensor(labels,POs_label)
                     POs_criticalprob = cat_tensor(POs_criticalprob,cur_POs_criticalprob)
 
-                    if not options.flag_path_supervise:
-                        continue
-
-                    new_edges = [[], []]
-                    new_edges[0] = sampled_graphs.edges(etype='pi2po')[0].detach().cpu().numpy().tolist()
-                    new_edges[1] = sampled_graphs.edges(etype='pi2po')[1].detach().cpu().numpy().tolist()
                     if flag_addedge:
                         sampled_graphs.remove_edges(sampled_graphs.edges('all', etype='pi2po')[2], etype='pi2po')
                 #     data['delay-label_pairs'][j] = (
@@ -539,7 +656,7 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
     # print(test_data[0])
     design_name = 'unknown'
     with (th.no_grad()):
-        labels,labels_hat = None,None
+        labels_chunks, labels_hat_chunks = [], []
         # for i in range(0,len(test_data),batch_size):
         #     idxs = list(range(i,min(i+batch_size,len(test_data))))
         corr_sim_avg = 0
@@ -568,7 +685,7 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                 stage_time['other'] += time()-start
 
             for POs, POs_mask in graphs_info['POs_batches']:
-                POs_mask = th.tensor(POs_mask).to(device)
+                POs_mask = POs_mask.to(device) if th.is_tensor(POs_mask) else th.tensor(POs_mask, device=device)
                 # print(len(POs),len(POs_mask))
                 # if len(POs)<2000:
                 #     exit()
@@ -613,16 +730,19 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                             for key in metadata_all.keys():
                                 metadata_all[key].extend(cur_metadata[key])
 
-                    labels_hat = cat_tensor(labels_hat,cur_labels_hat)
-
-                    labels = cat_tensor(labels,POs_label)
+                    labels_hat_chunks.append(cur_labels_hat.detach().cpu())
+                    labels_chunks.append(POs_label.detach().cpu())
 
                     if flag_addedge:
                         sampled_graphs.remove_edges(sampled_graphs.edges('all', etype='pi2po')[2], etype='pi2po')
 
         if runtime_stats:
             corr_sim_avg = corr_sim_avg / num_edp if num_edp else 0
+            if th.is_tensor(corr_sim_avg):
+                corr_sim_avg = corr_sim_avg.item()
 
+        labels_hat = th.cat(labels_hat_chunks, dim=0)
+        labels = th.cat(labels_chunks, dim=0)
         test_loss = Loss(labels_hat, labels).item()
         test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat, labels)
 
@@ -657,7 +777,7 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
     runtime_stats = enable_runtime_stats()
     print('Testing...')
     if flag_group:
-        labels_hat_all, labels_all = None, None
+        labels_hat_all_chunks, labels_all_chunks = [], []
         batch_sizes = [64, 32, 17, 8]
         batch_sizes = [16, 32]
         if len(test_data)!=2:
@@ -672,6 +792,7 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
             else:
                 po_bs = 10000
 
+            test_out = None
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
             else:
@@ -689,12 +810,19 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
             print(message)
             r2_list.append(test_r2)
             mape_list.append(test_mape)
-            labels_hat_all = cat_tensor(labels_hat_all, labels_hat)
-            labels_all = cat_tensor(labels_all, labels)
+            labels_hat_all_chunks.append(labels_hat.detach().cpu())
+            labels_all_chunks.append(labels.detach().cpu())
+            del labels_hat, labels
+            if test_out is not None:
+                del test_out
+            if device.type == 'cuda':
+                th.cuda.empty_cache()
 
 
 
 
+        labels_hat_all = th.cat(labels_hat_all_chunks, dim=0)
+        labels_all = th.cat(labels_all_chunks, dim=0)
         test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat_all, labels_all)
         print(
             '\t{} overall\tr2={:.3f}\tmape={:.3f}\tmin_ratio={:.2f}\tmax_ratio={:.2f}'.format(
@@ -744,13 +872,26 @@ def train(model):
     print(options)
     th.multiprocessing.set_sharing_strategy('file_system')
 
+    train_data_savepath = options.data_savepath
     train_data = load_data('train',options)
-    val_data = load_data('test',options)
+    val_data, test_data = None, None
 
-    options.data_savepath = '../datasets/cases_round7_v5/heter_removepiPO_new_full/'
-    options.flag_group = True
-    test_data = load_data('test',options)
     print("Data successfully loaded")
+
+    def ensure_eval_data():
+        nonlocal val_data, test_data
+        if val_data is not None and test_data is not None:
+            return
+        val_options = copy.copy(options)
+        val_options.data_savepath = train_data_savepath
+        val_options.flag_group = False
+        val_data = load_data('test', val_options)
+
+        test_options = copy.copy(options)
+        test_options.data_savepath = '../datasets/cases_round7_v5/heter_removepiPO_new_full/'
+        test_options.flag_group = True
+        test_data = load_data('test', test_options)
+        print("Evaluation data successfully loaded")
 
     train_idx_loader = get_idx_loader(train_data,options.batch_size,True)
 
@@ -768,6 +909,7 @@ def train(model):
     num_traindata = len(train_data)
     for epoch in range(options.num_epoch):
 
+        model.train()
         model.flag_train = True
 
         flag_path = options.flag_path_supervise
@@ -786,6 +928,8 @@ def train(model):
         total_num,total_loss, total_r2 = 0,0.0,0
 
         for batch, idxs in enumerate(train_idx_loader):
+            batch_start_time = time()
+            batch_profile = new_train_profile() if enable_runtime_stats() else None
             #torch.cuda.empty_cache()
             sampled_data = []
 
@@ -801,22 +945,29 @@ def train(model):
                 graphs.append(data['graph'])
                 num_nodes += data['graph'].number_of_nodes()
                 num_pos += len(train_data[idx]['delay-label_pairs'][0][1])
+            if options.debug_case_limit > 0:
+                num_cases = min(num_cases, options.debug_case_limit)
 
             flag_r = flag_reverse or flag_path
-            num_POs, totoal_path_loss,total_prob = 0,0,0
-            total_labels,total_labels_hat = None,None
+            num_POs = 0
+            total_labels, total_labels_hat, total_prob = [], [], []
 
 
-            po_bs = 1200
-            if num_nodes>180000 or (num_nodes>145000 and num_pos>800):
-                po_bs = int(num_pos/2)
+            po_bs = select_train_po_batch_size(num_nodes, num_pos)
+            if enable_runtime_stats():
+                print('Batch graph: num_nodes={} num_pos={} po_bs={} node_po_product={}'.format(
+                    num_nodes, num_pos, po_bs, num_nodes * po_bs), flush=True)
             #po_bs = 896
+            if batch_profile is not None:
+                profile_start = sync_timer_start()
             sampled_graphs, graphs_info = get_batched_data(graphs,po_batch_size=po_bs)
+            if batch_profile is not None:
+                sync_timer_add(batch_profile, 'batch_graph', profile_start)
             #print(len(graphs_info['POs_batches'][0][0]),sampled_graphs.number_of_nodes())
 
             for POs, POs_mask in graphs_info['POs_batches']:
                 if len(POs) < 200: continue
-                POs_mask = th.tensor(POs_mask).to(device)
+                POs_mask = POs_mask.to(device) if th.is_tensor(POs_mask) else th.tensor(POs_mask, device=device)
                 graphs_info['POs'] = POs
                 graphs_info['POs_origin'] = POs
 
@@ -826,14 +977,27 @@ def train(model):
                 for i in range(num_cases):
                     #torch.cuda.empty_cache()
                     flag_addedge = flag_path or options.global_cat_choice in [3,4,5]
+                    if batch_profile is not None:
+                        profile_start = sync_timer_start()
                     POs_label, PIs_delay, sampled_graphs, graphs_info = gather_data(sampled_data, sampled_graphs,
                                                                                     graphs_info, i, flag_addedge)
+                    if batch_profile is not None:
+                        sync_timer_add(batch_profile, 'gather_data', profile_start)
 
                     POs_label = POs_label[POs_mask]
-                    labels_hat, labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_,_ = model(sampled_graphs, graphs_info)[:8]
+                    if batch_profile is not None:
+                        stage_time = new_stage_time()
+                        profile_start = sync_timer_start()
+                        model_out = model(sampled_graphs, graphs_info, stage_time=stage_time)
+                        sync_timer_add(batch_profile, 'model_forward', profile_start)
+                        add_stage_time(batch_profile, stage_time)
+                    else:
+                        model_out = model(sampled_graphs, graphs_info)
+                    labels_hat, labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_,_ = model_out[:8]
                     total_num += len(POs_label)
+                    if batch_profile is not None:
+                        profile_start = sync_timer_start()
                     train_loss = Loss(labels_hat, POs_label)
-                    path_loss =th.tensor(0.0)
                     #print(th.any(th.isnan(train_loss)))
                     if flag_path:
                         #path_loss = th.mean(prob_sum )
@@ -854,42 +1018,70 @@ def train(model):
                     #     train_loss += Loss(labels_hat_residual, POs_label - path_inputdelay)
                     num_POs += len(prob_sum)
 
-                    totoal_path_loss += th.mean(path_loss).item()*len(prob_sum)
-                    total_prob += th.sum(prob_sum)
-                    total_labels = cat_tensor(total_labels, POs_label)
-                    total_labels_hat = cat_tensor(total_labels_hat, labels_hat)
+                    total_prob.append(prob_sum.detach())
+                    total_labels.append(POs_label.detach())
+                    total_labels_hat.append(labels_hat.detach())
 
                     if i==num_cases-1:
-                        train_r2, train_mape, ratio, min_ratio, max_ratio = cal_metrics(total_labels_hat, total_labels)
-                        path_loss_avg = totoal_path_loss / num_POs
-                        prob_avg = total_prob / num_POs
-                        print('{}/{} train_loss:{:.3f}, {:.3f} {:.3f}\ttrain_r2:{:.3f}\ttrain_mape:{:.3f}, ratio:{:.2f}-{:.2f}'.format((batch+1)*options.batch_size,num_traindata,train_loss.item(),path_loss_avg,prob_avg,train_r2,train_mape,min_ratio,max_ratio))
+                        with th.no_grad():
+                            metric_labels = th.cat(total_labels, dim=0)
+                            metric_labels_hat = th.cat(total_labels_hat, dim=0)
+                            train_r2, train_mape, ratio, min_ratio, max_ratio = cal_metrics(metric_labels_hat, metric_labels)
+                            path_loss_avg = 0.0
+                            prob_avg = th.cat(total_prob, dim=0).mean().item() if total_prob else 0.0
+                        batch_time = time() - batch_start_time
+                        print('{}/{} train_loss:{:.3f}, {:.3f} {:.3f}\ttrain_r2:{:.3f}\ttrain_mape:{:.3f}, ratio:{:.2f}-{:.2f}\tbatch_time:{:.2f}s'.format((batch+1)*options.batch_size,num_traindata,train_loss.item(),path_loss_avg,prob_avg,train_r2,train_mape,min_ratio,max_ratio,batch_time), flush=True)
+                    if batch_profile is not None:
+                        sync_timer_add(batch_profile, 'loss_metric', profile_start)
 
                     if len(labels_hat) ==0:
                         continue
 
+                    if batch_profile is not None:
+                        profile_start = sync_timer_start()
                     optim.zero_grad()
                     train_loss.backward()
                     optim.step()
+                    if batch_profile is not None:
+                        sync_timer_add(batch_profile, 'backward_step', profile_start)
                     #torch.cuda.empty_cache()
 
                     if flag_addedge:
+                        if batch_profile is not None:
+                            profile_start = sync_timer_start()
                         sampled_graphs.remove_edges(sampled_graphs.edges('all',etype='pi2po')[2],etype='pi2po')
+                        if batch_profile is not None:
+                            sync_timer_add(batch_profile, 'graph_mutation', profile_start)
+
+            if batch_profile is not None:
+                print(format_profile(batch_profile), flush=True)
+            if options.max_train_batches > 0 and batch + 1 >= options.max_train_batches:
+                print('Reached max_train_batches={} at epoch {}'.format(options.max_train_batches, epoch), flush=True)
+                break
 
         torch.cuda.empty_cache()
         print('End of epoch {}'.format(epoch))
-        po_bs = 2048
-        val_r2,val_mape = test_all(val_data,model,options.batch_size,po_bs=po_bs,usage='val',flag_reverse=flag_reverse or flag_path)
-        #test_r2, test_mape = test_all(test_data,model,options.batch_size,po_bs=po_bs,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
-        test_r2, test_mape = test_all(test_data, model, 1, po_bs=po_bs, usage='test',
-                                      flag_reverse=flag_reverse or flag_path, flag_group=True)
+        should_eval = options.eval_every > 0 and (epoch + 1) % options.eval_every == 0
+        val_r2 = val_mape = test_r2 = test_mape = float('nan')
+        if should_eval:
+            ensure_eval_data()
+            po_bs = 2048
+            val_r2,val_mape = test_all(val_data,model,options.batch_size,po_bs=po_bs,usage='val',flag_reverse=flag_reverse or flag_path)
+            #test_r2, test_mape = test_all(test_data,model,options.batch_size,po_bs=po_bs,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
+            test_r2, test_mape = test_all(test_data, model, 1, po_bs=po_bs, usage='test',
+                                          flag_reverse=flag_reverse or flag_path, flag_group=True)
+        else:
+            print('Skipping evaluation at epoch {} (eval_every={})'.format(epoch, options.eval_every))
 
         #torch.cuda.empty_cache()
         if options.checkpoint:
             save_path = '../checkpoints/{}'.format(options.checkpoint)
             th.save(model.state_dict(), os.path.join(save_path,"{}.pth".format(epoch)))
             with open(os.path.join(checkpoint_path,'res.txt'),'a') as f:
-                f.write('Epoch {}, val: {:.3f},{:.3f}; test: {:.3f},{:.3f}\n'.format(epoch,val_r2,val_mape,test_r2,test_mape))
+                if should_eval:
+                    f.write('Epoch {}, val: {:.3f},{:.3f}; test: {:.3f},{:.3f}\n'.format(epoch,val_r2,val_mape,test_r2,test_mape))
+                else:
+                    f.write('Epoch {}, evaluation skipped\n'.format(epoch))
 
 
 if __name__ == "__main__":
@@ -921,7 +1113,6 @@ if __name__ == "__main__":
         options.quick = input_options.quick
         options.batch_size = input_options.batch_size
         options.gpu = input_options.gpu
-        options.flag_path_supervise = input_options.flag_path_supervise
         options.flag_group = input_options.flag_group
         options.predict_path = input_options.predict_path
         options.flag_meta = input_options.flag_meta

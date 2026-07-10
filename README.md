@@ -107,6 +107,32 @@ Train the current NUA-Timer TCAD configuration:
 bash scripts/run_train_tcad6.sh
 ```
 
+The main BPN implementation is fixed to this TCAD6 configuration. Deprecated
+ablation branches in the model path have been removed; changing those model
+mechanism flags in `train.py` will raise an explicit configuration error.
+Training evaluates validation and test sets every epoch by default. Add
+`--eval_every N` to the training command to run evaluation every `N` epochs
+without changing the training updates.
+For short smoke/profiling runs, `--max_train_batches N` limits the number of
+training batches per epoch and `--debug_case_limit N` limits the number of
+timing cases per design. Leave both unset for full experiments. Use
+`--po_batch_size N` only for profiling PO batching; the default keeps the
+dynamic TCAD6 setting with a memory guard. The guard caps roughly
+`num_nodes_in_graph_batch * po_batch_size` through
+`--po_batch_node_budget` to avoid OOM when increasing graph `--batch_size`;
+set `--po_batch_node_budget 0` only when reproducing the old unconstrained
+PO batching behavior.
+The CPE path-search implementation defaults to the original dense aggregation.
+Use `--cpe_impl compare` on small smoke runs to check the sparse/frontier CPE
+paths against the dense path, then use `--cpe_impl sparse` or
+`--cpe_impl frontier` for profiling.
+The MTDE backward propagation path also defaults to the original DGL
+implementation. Use `--mtde_backward_impl compare` for small equivalence checks
+and `--mtde_backward_impl scatter` to profile the cached-edge scatter path.
+The MTDE forward pass can reuse cached topology edge ids with
+`--mtde_forward_cache cache`; use `--mtde_forward_cache compare` first on a
+small smoke run to check it against the original graph-query path.
+
 Evaluate NUA-Timer:
 
 ```bash
@@ -125,6 +151,10 @@ bash scripts/run_test_masterrtl.sh
 Runtime/statistics logging is disabled by default. Add `--log_level 1` to a
 parser, train, or test command only when you want parser runtime logs, test
 runtime breakdowns, and `corr_sim` reporting.
+
+CUDA kernel blocking is also disabled by default. Add `--cuda_blocking` only
+when debugging asynchronous CUDA errors; it can make normal GPU training much
+slower.
 
 The scripts use relative dataset and checkpoint paths. On the remote server,
 verify that paths such as `../datasets/...`, `../../datasets/...`, and
