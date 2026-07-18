@@ -19,7 +19,7 @@ of this repository's experiment workflow.
 
 - Run experiments on the remote server, not on the local machine.
 - Generate datasets on `hpc2`, including running `src/parser.py` under the
-  `dgl_3090` conda environment and producing the serialized `.pkl` files. Do
+  `dgl_new` conda environment and producing the serialized `.pkl` files. Do
   not run parser/data generation on linux10 or the experiment servers.
 - After parser output has been validated on `hpc2`, transfer the completed
   serialized dataset to whichever execution server will run the experiment
@@ -72,7 +72,7 @@ The required data flow is:
 
 ```text
 raw netlist/timing data on the shared linux10/HPC filesystem
-  -> run src/parser.py on hpc2 under dgl_3090
+  -> run src/parser.py on hpc2 under dgl_new
   -> validate data.pkl, split.pkl, and ntype2id.pkl on hpc2
   -> transfer the completed dataset directory to 149/169/170
   -> train or test on the selected execution server
@@ -83,12 +83,18 @@ The parser execution configuration is:
 ```bash
 ssh hpc2
 source /research/d4/gds/ziyiwang21/miniconda3/etc/profile.d/conda.sh
-conda activate dgl_3090
+conda activate dgl_new
 cd /research/d4/gds/ziyiwang21/Code/RTL-Timing-Prediction/src
 bash scripts/run_parser_train.sh
 # Or, for test data:
 bash scripts/run_parser_test.sh
 ```
+
+The shared `dgl_new` parser environment currently uses Python 3.10.12,
+PyTorch 2.1.0, and DGL 2.4.0. Its CUDA 12.1 build differs from the CUDA 11.8
+build on 149, but parser execution is CPU-based and has been validated against
+the same parser/DGL tests. Do not use the legacy `dgl_3090` environment for new
+parser runs.
 
 Keep raw data, parser work directories, and incomplete parser output on the
 shared linux10/HPC filesystem, but run the parser process on `hpc2` only.
@@ -267,7 +273,7 @@ runtime breakdowns, and `corr_sim` reporting.
 
 ## Standard Experiment Scripts
 
-Run the parser scripts from `src/` on `hpc2` under `dgl_3090`:
+Run the parser scripts from `src/` on `hpc2` under `dgl_new`:
 
 ```bash
 bash scripts/run_parser_train.sh
@@ -302,7 +308,7 @@ bash scripts/run_test_masterrtl.sh
 ## Validation
 
 For code edits, prefer lightweight local syntax/import checks when possible.
-Run parser validation on `hpc2` under `dgl_3090`, and run the real
+Run parser validation on `hpc2` under `dgl_new`, and run the real
 training/testing workload on 149/169/170 under `dgl_new`.
 
 Useful local checks:
