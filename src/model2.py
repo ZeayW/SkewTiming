@@ -8,6 +8,8 @@ from utils import *
 from options import get_options
 from transformer import PathTransformer
 from pathformer4 import *
+from dag_ops import dag_correlation, segment_softmax_aggregate
+from training_utils import normalize_endpoint_correlation
 from time import time
 
 options = get_options()
@@ -79,26 +81,66 @@ class VanillaDirGNN(nn.Module):
             return {'neigh_r': th.zeros_like(nodes.data['feat_gnn'])}
         m = nodes.mailbox['mg'].mean(dim=1)
         return {'neigh_r': m}
-    def forward(self, graph,feat):
+    def _forward_impl(self, graph, feat, use_builtin):
+        with graph.local_scope():
+            graph.ndata['feat_gnn'] = self.mlp_in(feat)
 
-        h = self.mlp_in(feat)
-        graph.ndata['feat_gnn'] = h
+            for _ in range(self.num_layers):
+                if use_builtin:
+                    graph.update_all(
+                        fn.copy_u('feat_gnn', 'mg'), fn.mean('mg', 'neigh_f'), etype='forward')
+                    graph.update_all(
+                        fn.copy_u('feat_gnn', 'mg'), fn.mean('mg', 'neigh_r'), etype='reverse')
+                else:
+                    graph.update_all(self._msg, self._reduce_mean_f, etype='forward')
+                    graph.update_all(self._msg, self._reduce_mean_r, etype='reverse')
 
-        for _ in range(self.num_layers):
-            # messages from forward edges
-            graph.update_all(self._msg, self._reduce_mean_f, etype='forward')
-            h_fwd = graph.ndata['neigh_f']
+                h_cat = th.cat((
+                    graph.ndata['feat_gnn'],
+                    graph.ndata['neigh_f'],
+                    graph.ndata['neigh_r'],
+                ), dim=1)
+                graph.ndata['feat_gnn'] = self.activation(self.mlp_update(h_cat))
 
-            # messages from reverse edges
-            graph.update_all(self._msg, self._reduce_mean_r, etype='reverse')
-            h_rev = graph.ndata['neigh_r']
+            return graph.ndata['feat_gnn']
 
-            # fuse self, forward, reverse
-            h_cat = th.cat((graph.ndata['feat_gnn'], h_fwd, h_rev), dim=1)
-            h_new = self.activation(self.mlp_update(h_cat))
-            graph.ndata['feat_gnn'] = h_new
+    @staticmethod
+    def _assert_close(name, value, reference):
+        if not th.allclose(value, reference, rtol=1e-4, atol=1e-5):
+            max_abs = th.max(th.abs(value - reference)).item()
+            raise ValueError('FSE GNN {} mismatch: max_abs={:.6g}'.format(name, max_abs))
 
-        return graph.ndata['feat_gnn']
+    def forward(self, graph, feat, impl='udf'):
+        if impl == 'udf':
+            return self._forward_impl(graph, feat, use_builtin=False)
+        if impl == 'builtin':
+            return self._forward_impl(graph, feat, use_builtin=True)
+        if impl != 'compare':
+            raise ValueError('Unknown FSE GNN implementation: {}'.format(impl))
+
+        udf_output = self._forward_impl(graph, feat, use_builtin=False)
+        builtin_output = self._forward_impl(graph, feat, use_builtin=True)
+        self._assert_close('output', builtin_output.detach(), udf_output.detach())
+
+        if th.is_grad_enabled():
+            node_scale = ((th.arange(len(udf_output), device=udf_output.device) % 7) + 1).unsqueeze(1)
+            col_scale = ((th.arange(udf_output.shape[1], device=udf_output.device) % 5) + 1).unsqueeze(0)
+            projection = (node_scale * col_scale).to(dtype=udf_output.dtype)
+            projection = projection / projection.max()
+            parameters = tuple(parameter for parameter in self.parameters() if parameter.requires_grad)
+            udf_grads = th.autograd.grad(
+                th.sum(udf_output * projection), parameters, allow_unused=True)
+            builtin_grads = th.autograd.grad(
+                th.sum(builtin_output * projection), parameters, retain_graph=True, allow_unused=True)
+            for idx, (builtin_grad, udf_grad) in enumerate(zip(builtin_grads, udf_grads)):
+                if builtin_grad is None or udf_grad is None:
+                    if builtin_grad is not udf_grad:
+                        raise ValueError('FSE GNN parameter {} gradient presence mismatch'.format(idx))
+                    continue
+                self._assert_close(
+                    'parameter {} gradient'.format(idx), builtin_grad, udf_grad)
+
+        return builtin_output
 
 
 def extract_endpoint_metadata(graph, nodesprob, PIsmask):
@@ -315,6 +357,9 @@ class BPN(nn.Module):
 
         tf_dim = hidden_dim
         gnn_outdim = int(tf_dim / 2)
+        cpe_base_pe = base_pe
+        if getattr(options, 'cpe_depth_encoding', 'absolute') == 'correlation_only':
+            cpe_base_pe = 'none'
         self.pathformer = PathTransformerW(
             d_in=tf_dim,
             d_model=tf_dim,
@@ -322,7 +367,7 @@ class BPN(nn.Module):
             n_layers=3,
             alpha=alpha,
             beta=beta,
-            base_pe=base_pe,
+            base_pe=cpe_base_pe,
             use_corr_pe=True,
             use_attn_bias=True,
         )
@@ -501,9 +546,6 @@ class BPN(nn.Module):
         prob_sum = th.sum(nodes.mailbox['mp'], dim=1)
         # prob_sum = th.sum(nodes.mailbox['mp']*nodes.mailbox['mi'], dim=1)
         # prob_max = th.max(nodes.mailbox['mp'],dim=1).values
-        prob_mean = th.mean(nodes.mailbox['mp'], dim=1).unsqueeze(1)
-        prob_dev = th.sum(th.abs(nodes.mailbox['mp'] - prob_mean), dim=1)
-
         # print(nodes.mailbox['mw'].shape,nodes.mailbox['mp'].shape)
         prob_target = th.softmax(nodes.mailbox['mw'], dim=1).reshape(nodes.mailbox['mp'].shape)
         # print(prob_target)
@@ -539,13 +581,7 @@ class BPN(nn.Module):
     def prop_backward_scatter(self, graph, graph_info):
         hp = graph.ndata['hp']
         edge_weight = graph.edges['reverse'].data['weight'].reshape(-1, 1)
-        topo_r_edges = graph_info.get('topo_r_in_edges')
-
-        if topo_r_edges is None:
-            topo_r_edges = [
-                graph.in_edges(nodes, form='all', etype='reverse')
-                for nodes in graph_info['topo_r'][1:]
-            ]
+        topo_r_edges = self.get_topo_r_edges(graph, graph_info)
 
         for src, dst, eid in topo_r_edges:
             if eid.numel() == 0:
@@ -562,30 +598,123 @@ class BPN(nn.Module):
         graph.ndata['hp'] = hp
         return hp
 
+    def get_topo_r_edges(self, graph, graph_info):
+        topo_r_edges = graph_info.get('topo_r_in_edges')
+        if topo_r_edges is not None:
+            return topo_r_edges
+        return [
+            graph.in_edges(nodes, form='all', etype='reverse')
+            for nodes in graph_info['topo_r'][1:]
+        ]
+
+    def prop_backward_custom(self, graph, graph_info):
+        hp = dag_correlation(
+            graph.ndata['hp'],
+            graph.edges['reverse'].data['weight'].reshape(-1, 1),
+            self.get_topo_r_edges(graph, graph_info),
+        )
+        graph.ndata['hp'] = hp
+        return hp
+
     def prop_backward(self, graph, graph_info):
         mtde_backward_impl = getattr(options, 'mtde_backward_impl', 'dgl')
         if mtde_backward_impl == 'dgl':
             return self.prop_backward_dgl(graph, graph_info)
         if mtde_backward_impl == 'scatter':
             return self.prop_backward_scatter(graph, graph_info)
+        if mtde_backward_impl == 'custom':
+            if not th.is_grad_enabled():
+                return self.prop_backward_scatter(graph, graph_info)
+            return self.prop_backward_custom(graph, graph_info)
         if mtde_backward_impl == 'compare':
             initial_hp = graph.ndata['hp'].clone()
-            dgl_hp = self.prop_backward_dgl(graph, graph_info).clone()
-            graph.ndata['hp'] = initial_hp
-            scatter_hp = self.prop_backward_scatter(graph, graph_info)
+            with th.no_grad():
+                graph.ndata['hp'] = initial_hp.clone()
+                dgl_hp = self.prop_backward_dgl(graph, graph_info).clone()
+                graph.ndata['hp'] = initial_hp.clone()
+                scatter_hp = self.prop_backward_scatter(graph, graph_info).clone()
+                graph.ndata['hp'] = initial_hp.clone()
+                custom_hp = self.prop_backward_custom(graph, graph_info).clone()
             if not th.allclose(dgl_hp, scatter_hp, rtol=1e-4, atol=1e-5):
                 max_abs = th.max(th.abs(dgl_hp - scatter_hp)).item()
                 raise ValueError('MTDE scatter backward mismatch: max_abs={:.6g}'.format(max_abs))
-            return scatter_hp
+            if not th.allclose(dgl_hp, custom_hp, rtol=1e-4, atol=1e-5):
+                max_abs = th.max(th.abs(dgl_hp - custom_hp)).item()
+                raise ValueError('MTDE custom backward mismatch: max_abs={:.6g}'.format(max_abs))
+            edge_weight = graph.edges['reverse'].data['weight']
+            if th.is_grad_enabled() and edge_weight.requires_grad:
+                node_scale = ((th.arange(initial_hp.shape[0], device=initial_hp.device) % 7) + 1).reshape(-1, 1)
+                col_scale = ((th.arange(initial_hp.shape[1], device=initial_hp.device) % 5) + 1).reshape(1, -1)
+
+                graph.ndata['hp'] = initial_hp.clone()
+                scatter_grad_hp = self.prop_backward_scatter(graph, graph_info)
+                scatter_probe = th.sum(scatter_grad_hp * node_scale * col_scale)
+                scatter_grad, = th.autograd.grad(scatter_probe, edge_weight)
+
+                graph.ndata['hp'] = initial_hp.clone()
+                custom_grad_hp = self.prop_backward_custom(graph, graph_info)
+                custom_probe = th.sum(custom_grad_hp * node_scale * col_scale)
+                custom_grad, = th.autograd.grad(custom_probe, edge_weight)
+
+                if not th.allclose(scatter_grad, custom_grad, rtol=1e-4, atol=1e-5):
+                    max_abs = th.max(th.abs(scatter_grad - custom_grad)).item()
+                    raise ValueError('MTDE custom gradient mismatch: max_abs={:.6g}'.format(max_abs))
+            graph.ndata['hp'] = initial_hp
+            if th.is_grad_enabled():
+                return self.prop_backward_custom(graph, graph_info)
+            return self.prop_backward_scatter(graph, graph_info)
         raise ValueError('Unknown MTDE backward implementation: {}'.format(mtde_backward_impl))
 
+    def fse_components(self, nodes_prob, nodes_emb, graph_info):
+        nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
+        aggregation = getattr(options, 'fse_aggregation', 'raw_sum')
+        if aggregation == 'endpoint_mean':
+            fse_weights = normalize_endpoint_correlation(nodes_prob_tr)
+        elif aggregation == 'raw_sum':
+            fse_weights = nodes_prob_tr
+        else:
+            raise ValueError('Unknown FSE aggregation: {}'.format(aggregation))
+        h_global = th.matmul(fse_weights, nodes_emb)
+        probinfo_etp = -th.sum(
+            nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+        weight_etp = -th.sum(
+            nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
+        minmax = (
+            th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
+        return h_global, probinfo_etp, weight_etp, minmax
+
+    def fse_node_embeddings(self, graph, graph_info):
+        impl = getattr(options, 'fse_gnn_impl', 'udf')
+        cache_mode = getattr(options, 'fse_eval_cache', 'off')
+        can_cache = not self.training and not th.is_grad_enabled()
+
+        if not can_cache or cache_mode == 'off':
+            return self.gnn_pathfeat(graph, graph.ndata['feat'], impl=impl)
+
+        cache_key = '_fse_nodes_emb'
+        cached = graph_info.get(cache_key)
+        if cached is None:
+            cached = self.gnn_pathfeat(graph, graph.ndata['feat'], impl=impl).detach()
+            graph_info[cache_key] = cached
+            return cached
+
+        if cache_mode == 'compare':
+            reference = self.gnn_pathfeat(graph, graph.ndata['feat'], impl=impl)
+            VanillaDirGNN._assert_close('eval cache', cached, reference)
+        return cached
+
     def append_path_context(self, path_feat, distance, corr):
+        depth_encoding = getattr(options, 'cpe_depth_encoding', 'absolute')
+        if depth_encoding == 'correlation_only':
+            distance = th.zeros_like(distance)
+        elif depth_encoding != 'absolute':
+            raise ValueError('Unknown CPE depth encoding: {}'.format(depth_encoding))
         feat_raw = self.proj_pathfeat(th.cat((distance, corr), dim=1))
         return th.cat((path_feat, feat_raw), dim=1)
 
 
-    def init_path_buffers(self, graph, graph_info):
-        feat_p = graph_info['nodes_emb']
+    def init_path_buffers(self, graph, graph_info, nodes_emb):
+        feat_p = nodes_emb
         po_count = len(graph_info['POs'])
         po_feat = feat_p[graph_info['POs']]
         distance = th.zeros((po_count, 1), dtype=th.float, device=graph.device)
@@ -615,13 +744,13 @@ class BPN(nn.Module):
 
         return path_emb, path_lengths, path_inputdelay
 
-    def path_search_dense(self, graph, graph_info, stage_time=None):
+    def path_search_dense(self, graph, graph_info, nodes_emb, stage_time=None):
 
         timed = stage_time is not None
         if timed:
             start = time()
         feat_p, po_count, path_feat, path_lengths, path_inputdelay, c_sink, c_local = \
-            self.init_path_buffers(graph, graph_info)
+            self.init_path_buffers(graph, graph_info, nodes_emb)
         is_ended = th.zeros(po_count, dtype=th.bool, device=graph.device)
         debug_counts = [] if getattr(options, 'log_level', 0) >= 2 else None
         debug_pairs = [] if getattr(options, 'log_level', 0) >= 2 else None
@@ -712,12 +841,12 @@ class BPN(nn.Module):
 
         return path_feat, path_lengths, path_inputdelay, c_sink, c_local
 
-    def path_search_sparse(self, graph, graph_info, stage_time=None):
+    def path_search_sparse(self, graph, graph_info, nodes_emb, stage_time=None):
         timed = stage_time is not None
         if timed:
             start = time()
         feat_p, po_count, path_feat, path_lengths, path_inputdelay, c_sink, c_local = \
-            self.init_path_buffers(graph, graph_info)
+            self.init_path_buffers(graph, graph_info, nodes_emb)
         is_ended = th.zeros(po_count, dtype=th.bool, device=graph.device)
         debug_counts = [] if getattr(options, 'log_level', 0) >= 2 else None
         if timed:
@@ -805,12 +934,12 @@ class BPN(nn.Module):
 
         return path_feat, path_lengths, path_inputdelay, c_sink, c_local
 
-    def path_search_frontier(self, graph, graph_info, stage_time=None):
+    def path_search_frontier(self, graph, graph_info, nodes_emb, stage_time=None):
         timed = stage_time is not None
         if timed:
             start = time()
         feat_p, po_count, path_feat, path_lengths, path_inputdelay, c_sink, c_local = \
-            self.init_path_buffers(graph, graph_info)
+            self.init_path_buffers(graph, graph_info, nodes_emb)
         is_ended = th.zeros(po_count, dtype=th.bool, device=graph.device)
         debug_counts = [] if getattr(options, 'log_level', 0) >= 2 else None
         debug_pairs = [] if getattr(options, 'log_level', 0) >= 2 else None
@@ -1011,23 +1140,23 @@ class BPN(nn.Module):
         if 'cl' in graph.ndata:
             graph.ndata['cl'] = th.zeros_like(graph.ndata['hp'])
 
-    def path_embedding(self, graph, graph_info, stage_time=None):
+    def path_embedding(self, graph, graph_info, nodes_emb, stage_time=None):
         cpe_impl = getattr(options, 'cpe_impl', 'dense')
 
         if cpe_impl == 'dense':
-            path_inputs = self.path_search_dense(graph, graph_info, stage_time)
+            path_inputs = self.path_search_dense(graph, graph_info, nodes_emb, stage_time)
         elif cpe_impl == 'sparse':
-            path_inputs = self.path_search_sparse(graph, graph_info, stage_time)
+            path_inputs = self.path_search_sparse(graph, graph_info, nodes_emb, stage_time)
         elif cpe_impl == 'frontier':
-            path_inputs = self.path_search_frontier(graph, graph_info, stage_time)
+            path_inputs = self.path_search_frontier(graph, graph_info, nodes_emb, stage_time)
         elif cpe_impl == 'compare':
             initial_is_critical = graph.ndata['is_critical'].clone()
-            dense_inputs = self.path_search_dense(graph, graph_info, None)
+            dense_inputs = self.path_search_dense(graph, graph_info, nodes_emb, None)
             self.reset_path_search_state(graph, initial_is_critical)
-            sparse_inputs = self.path_search_sparse(graph, graph_info, stage_time)
+            sparse_inputs = self.path_search_sparse(graph, graph_info, nodes_emb, stage_time)
             self.assert_same_path_inputs(dense_inputs, sparse_inputs, 'sparse')
             self.reset_path_search_state(graph, initial_is_critical)
-            frontier_inputs = self.path_search_frontier(graph, graph_info, None)
+            frontier_inputs = self.path_search_frontier(graph, graph_info, nodes_emb, None)
             if getattr(options, 'log_level', 0) >= 2 and not th.equal(dense_inputs[1], frontier_inputs[1]):
                 bad_idx = th.nonzero(frontier_inputs[1] != dense_inputs[1]).flatten()[:5]
                 dense_counts = graph_info.get('_cpe_dense_counts', [])
@@ -1127,12 +1256,65 @@ class BPN(nn.Module):
             reverse_weight = graph.edges['reverse'].data['weight']
         return h_gnn, reverse_weight
 
-    def mtde_forward(self, graph, graph_info):
+    def mtde_scatter_attention(self, z, score, dst_pos, num_dst):
+        aggregated, alpha = segment_softmax_aggregate(z, score, dst_pos, num_dst)
+        return self.activation(aggregated), alpha
+
+    def mtde_forward_scatter_once(self, graph, graph_info):
+        cache = graph_info.get('mtde_forward_cache')
+        if cache is None:
+            raise ValueError('MTDE forward scatter requires cached topology data')
+
+        h = graph.ndata['h']
+        reverse_weight = th.zeros((graph.number_of_edges('reverse'), 1),
+                                  dtype=th.float, device=self.device)
+
+        for i, nodes in enumerate(graph_info['topo']):
+            if i == 0:
+                pi_input = th.cat((graph.ndata['delay'][nodes], graph.ndata['value'][nodes]), dim=1)
+                h[nodes] = self.activation(self.mlp_pi(pi_input))
+                continue
+
+            level_data = cache[i]
+            nodes_gate = level_data['nodes_gate']
+            if len(nodes_gate) != 0:
+                gate_src = level_data['gate_src']
+                gate_dst = level_data['gate_dst']
+                gate_z = self.linear_neigh_gate(th.cat((h[gate_src], graph.ndata[self.feat_name2][gate_dst]), dim=1))
+                gate_score = self.activation2(th.matmul(gate_z, self.attention_vector_g))
+                gate_h, gate_alpha = self.mtde_scatter_attention(
+                    gate_z, gate_score, level_data['gate_dst_pos'], len(nodes_gate))
+                h[nodes_gate] = gate_h
+                reverse_weight[level_data['gate_reverse_eids']] = gate_alpha
+
+            nodes_module = level_data['nodes_module']
+            if len(nodes_module) != 0:
+                module_src = level_data['module_src']
+                module_dst = level_data['module_dst']
+                module_bit_position = graph.edges['intra_module'].data['bit_position'][
+                    level_data['module_eids']].reshape(-1, 1)
+                module_dst_feat = th.cat((
+                    module_bit_position,
+                    graph.ndata[self.feat_name2][module_dst],
+                    level_data['module_width2'][level_data['module_dst_pos']],
+                ), dim=1)
+                module_z = self.linear_neigh_module(th.cat((h[module_src], module_dst_feat), dim=1))
+                module_score = self.activation2(th.matmul(module_z, self.attention_vector_m))
+                module_h, module_alpha = self.mtde_scatter_attention(
+                    module_z, module_score, level_data['module_dst_pos'], len(nodes_module))
+                h[nodes_module] = module_h
+                reverse_weight[level_data['module_reverse_eids']] = module_alpha
+
+        graph.ndata['h'] = h
+        graph.edges['reverse'].data['weight'] = reverse_weight
+        return h[graph_info['POs']], reverse_weight
+
+    def mtde_forward_dgl(self, graph, graph_info):
         mtde_forward_cache = getattr(options, 'mtde_forward_cache', 'off')
         if mtde_forward_cache == 'off':
-            return self.mtde_forward_once(graph, graph_info, use_cache=False)[0]
+            return self.mtde_forward_once(graph, graph_info, use_cache=False)
         if mtde_forward_cache == 'cache':
-            return self.mtde_forward_once(graph, graph_info, use_cache=True)[0]
+            return self.mtde_forward_once(graph, graph_info, use_cache=True)
         if mtde_forward_cache == 'compare':
             with graph.local_scope():
                 ref_h, ref_weight = self.mtde_forward_once(graph, graph_info, use_cache=False)
@@ -1146,8 +1328,51 @@ class BPN(nn.Module):
             if ref_weight is not None and not th.allclose(ref_weight, cached_weight, rtol=1e-4, atol=1e-5):
                 max_abs = th.max(th.abs(ref_weight - cached_weight)).item()
                 raise ValueError('MTDE forward cache mismatch: reverse.weight max_abs={:.6g}'.format(max_abs))
-            return cached_h
+            return cached_h, cached_weight
         raise ValueError('Unknown MTDE forward cache mode: {}'.format(mtde_forward_cache))
+
+    def mtde_forward(self, graph, graph_info):
+        mtde_forward_impl = getattr(options, 'mtde_forward_impl', 'dgl')
+        if mtde_forward_impl == 'dgl':
+            return self.mtde_forward_dgl(graph, graph_info)[0]
+        if mtde_forward_impl == 'scatter':
+            return self.mtde_forward_scatter_once(graph, graph_info)[0]
+        if mtde_forward_impl == 'compare':
+            with th.no_grad(), graph.local_scope():
+                ref_h, ref_weight = self.mtde_forward_dgl(graph, graph_info)
+                ref_h = ref_h.clone()
+                ref_weight = ref_weight.clone()
+            scatter_h, scatter_weight = self.mtde_forward_scatter_once(graph, graph_info)
+            if not th.allclose(ref_h, scatter_h, rtol=1e-4, atol=1e-5):
+                max_abs = th.max(th.abs(ref_h - scatter_h)).item()
+                raise ValueError('MTDE forward scatter mismatch: h_gnn max_abs={:.6g}'.format(max_abs))
+            if not th.allclose(ref_weight, scatter_weight, rtol=1e-4, atol=1e-5):
+                max_abs = th.max(th.abs(ref_weight - scatter_weight)).item()
+                raise ValueError('MTDE forward scatter mismatch: reverse.weight max_abs={:.6g}'.format(max_abs))
+            return scatter_h
+        raise ValueError('Unknown MTDE forward implementation: {}'.format(mtde_forward_impl))
+
+    def mtde_forward_eval_cached(self, graph, graph_info):
+        case_key = graph_info.get('eval_case_key')
+        can_cache = case_key is not None and not self.training and not th.is_grad_enabled()
+        cache = graph_info.get('_mtde_eval_case_cache') if can_cache else None
+        if cache is not None and cache['key'] == case_key:
+            graph.ndata['h'] = cache['h']
+            if cache['reverse_weight'] is not None:
+                graph.edges['reverse'].data['weight'] = cache['reverse_weight']
+            return cache['h'][graph_info['POs']]
+
+        h_gnn = self.mtde_forward(graph, graph_info)
+        if can_cache:
+            reverse_weight = None
+            if 'reverse' in graph.etypes and 'weight' in graph.edges['reverse'].data:
+                reverse_weight = graph.edges['reverse'].data['weight'].detach().clone()
+            graph_info['_mtde_eval_case_cache'] = {
+                'key': case_key,
+                'h': graph.ndata['h'].detach().clone(),
+                'reverse_weight': reverse_weight,
+            }
+        return h_gnn
 
     def forward(self, graph, graph_info,flag_meta=False,stage_time=None):
         timed = stage_time is not None
@@ -1156,7 +1381,7 @@ class BPN(nn.Module):
             # stage 1: MDTE
             if timed:
                 start = time()
-            h_gnn = self.mtde_forward(graph, graph_info)
+            h_gnn = self.mtde_forward_eval_cached(graph, graph_info)
             if timed:
                 stage_time['MTDE_forward'] += time() - start
 
@@ -1170,7 +1395,7 @@ class BPN(nn.Module):
 
             if timed:
                 start = time()
-            graph_info['nodes_emb'] = self.gnn_pathfeat(graph, graph.ndata['feat'])
+            nodes_emb = self.fse_node_embeddings(graph, graph_info)
             if timed:
                 stage_time['FSE'] += time() - start
 
@@ -1183,35 +1408,35 @@ class BPN(nn.Module):
                 stage_time['MTDE_backward'] += time() - start
 
             graph.ndata['hp'] = nodes_prob
-            graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(self.device)
-            graph.ndata['id'][POs] = th.arange(len(POs), dtype=th.int64, device=self.device).unsqueeze(-1)
-            graph.pull(POs, self.message_func_prob, self.reduce_func_prob, etype='pi2po')
-            POs_criticalprob = graph.ndata['prob_sum'][POs]
-            prob_sum = graph.ndata['prob_sum'][POs]
-            prob_dev = graph.ndata['prob_dev'][POs]
-            prob_ce = graph.ndata['prob_ce'][POs]
+            if self.flag_path_supervise:
+                graph.ndata['id'] = th.zeros((graph.number_of_nodes(), 1), dtype=th.int64).to(self.device)
+                graph.ndata['id'][POs] = graph_info['PO_cols'].unsqueeze(-1)
+                empty_prob = nodes_prob.new_zeros((graph.number_of_nodes(), 1))
+                graph.ndata['prob_sum'] = empty_prob
+                graph.ndata['prob_dev'] = empty_prob.clone()
+                graph.ndata['prob_ce'] = empty_prob.clone()
+                graph.pull(POs, self.message_func_prob, self.reduce_func_prob, etype='pi2po')
+                POs_criticalprob = graph.ndata['prob_sum'][POs]
+                prob_sum = graph.ndata['prob_sum'][POs]
+                prob_dev = graph.ndata['prob_dev'][POs]
+                prob_ce = graph.ndata['prob_ce'][POs]
 
             # stage 2: generate the FSE
             if timed:
                 start = time()
-            PIs_mask = graph.ndata['is_pi'] == 1
-            nodes_prob_tr = th.transpose(nodes_prob, 0, 1)
-            graph_info['PO2node_prob'] = nodes_prob_tr
-
-            h_global = th.matmul(nodes_prob_tr, graph_info['nodes_emb'])
-            h_etp = self.mlp_probinfo(
-                -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1))
+            h_global, probinfo_etp, weight_etp, minmax = self.fse_components(
+                nodes_prob, nodes_emb, graph_info)
+            h_etp = self.mlp_probinfo(probinfo_etp)
             h_global = th.cat((h_global, h_etp), dim=1)
 
-            etp = -th.sum(nodes_prob_tr * th.log(nodes_prob_tr + 1e-10), dim=1).unsqueeze(1)
-            minmax = (th.max(nodes_prob_tr, dim=1).values - th.min(nodes_prob_tr, dim=1).values).unsqueeze(1)
-            w = self.mlp_w2(th.cat((etp, minmax), dim=1))
+            w = self.mlp_w2(th.cat((weight_etp, minmax), dim=1))
             h = th.cat((h, w * h_global), dim=1)
             if timed:
                 stage_time['FSE'] += time() - start
 
             # stage 3: generate CPE
-            path_emb, path_lengths, path_inputdelay = self.path_embedding(graph, graph_info, stage_time if timed else None)
+            path_emb, path_lengths, path_inputdelay = self.path_embedding(
+                graph, graph_info, nodes_emb, stage_time if timed else None)
             rst_residual = self.mlp_out_residual(path_emb)
             delay_emb = self.linear_delay(path_inputdelay)
             h = th.cat((h, path_emb, delay_emb), dim=1)
@@ -1224,6 +1449,7 @@ class BPN(nn.Module):
                 stage_time['proj'] += time() - start
 
             if flag_meta:
+                PIs_mask = graph.ndata['is_pi'] == 1
                 metadata = extract_endpoint_metadata(graph, nodes_prob, PIs_mask)
                 metadata['critical_input_arrival'] = path_inputdelay.squeeze(1)
                 metadata['critical_path_length'] = path_lengths

@@ -20,12 +20,15 @@ src/
     run_test_masterrtl.sh     # test MasterRTL/XGBoost path baseline
 
   parser.py                   # raw netlist/timing parser
+  parser_helpers.py           # text parsing and dataset-contract validation
+  parser_graph_utils.py       # parser-owned DGL graph construction helpers
   train.py                    # main NUA-Timer train/test entry
   train_gt.py                 # graph-transformer baseline entry
   train_path_xgb.py           # MasterRTL-style path baseline
   train_path_xgb_multi.py     # RTLTimer-style path baseline
 
   model2.py                   # main NUA-Timer model
+  dag_ops.py                  # optimized differentiable DAG/scatter operators
   model.py                    # baseline/path model utilities
   gtmodel.py                  # graph-transformer baseline model
   pathformer4.py              # current path Transformer encoder
@@ -34,12 +37,12 @@ src/
   options.py                  # main CLI options
   options_gt.py               # graph-transformer CLI options
   tee.py                      # stdout tee helper
-  utils/                      # shared core utilities plus analysis/plot scripts
+  utils/                      # legacy shared utilities plus analysis/plot scripts
   abandon/                    # legacy code and old scripts kept for reference
 ```
 
-`src/utils/__init__.py` is the former `src/utils.py`, so existing imports such
-as `from utils import *` still work when commands are run from `src/`.
+The parser uses the tracked `parser_helpers.py` and `parser_graph_utils.py`
+modules and does not depend on the ignored `src/utils/` directory.
 
 ## Setup
 
@@ -50,22 +53,35 @@ environment:
 conda activate dgl_new
 ```
 
-If a fresh environment is needed, use Python 3.7 and install the same major
-dependencies as the original setup:
+The configuration currently validated on 149-2 is:
+
+```text
+Python 3.10.12
+PyTorch 2.1.0
+DGL 2.4.0+cu118
+NumPy 1.26.4
+pandas 2.2.3
+scikit-learn 1.7.2
+NetworkX 3.4.2
+torchmetrics 1.6.1
+```
+
+For the closest reproduction, clone or export the server's `dgl_new`
+environment. If a fresh environment is needed, start with Python 3.10:
 
 ```bash
-conda create -n dgl_new python=3.7
+conda create -n dgl_new python=3.10
 conda activate dgl_new
 
 pip install \
-  joblib==1.2.0 \
-  networkx==2.2 \
-  numpy==1.21.5 \
-  pandas==1.3.5 \
-  scikit-learn==1.0.2 \
-  scipy==1.7.3 \
-  tqdm==4.64.0 \
-  torchmetrics==0.9.3 \
+  joblib \
+  networkx \
+  numpy \
+  pandas \
+  scikit-learn \
+  scipy \
+  tqdm \
+  torchmetrics \
   xgboost \
   matplotlib \
   seaborn \
@@ -73,16 +89,9 @@ pip install \
   openpyxl
 ```
 
-Install PyTorch and DGL according to the CUDA version on the server. The
-original environment used:
-
-```text
-torch==1.13.0
-dgl==0.8.1
-```
-
-For CUDA 11.3, the old setup used `torch==1.13.0+cu113` and
-`dgl_cu113==0.8.1`.
+Install PyTorch and DGL from their CUDA-specific distributions before the
+remaining packages. Match the CUDA runtime on the target machine; the
+validated server environment uses the CUDA 11.8 DGL build shown above.
 
 ## Running Experiments
 
@@ -101,10 +110,44 @@ bash scripts/run_parser_train.sh
 bash scripts/run_parser_test.sh
 ```
 
+Parser traversal and split ordering are deterministic by default. Use
+`--parser_seed N` to select a different reproducible ordering.
+The parser scripts use `--parser_workers 4` to parse independent timing cases
+in parallel. Set it to `1` for the serial fallback or when CPU/RAM is limited.
+Constant propagation defaults to the event-driven
+`--parser_constant_impl worklist` implementation. Use `scan` for the original
+full-graph scan or `compare` to execute both implementations and assert exact
+agreement while debugging parser changes.
+
+For each design, the parser defines the PO set as the union of endpoints that
+have a label in at least one NUIAT case. A case that does not report one of
+those endpoints stores `-1` at the corresponding label position. NUA-Timer and
+the graph-transformer baseline exclude these rows from supervised losses,
+path supervision, metrics, metadata, and saved predictions; zero remains a
+valid timing label and is not filtered.
+
 Train the current NUA-Timer TCAD configuration:
 
 ```bash
 bash scripts/run_train_tcad6.sh
+```
+
+This canonical entry defaults to the best validated optimization configuration:
+
+```text
+--batch_size 16
+--num_epoch 100
+--flag_alternate
+--lr_scheduler --lr_scheduler_patience 3 --lr_scheduler_factor 0.25
+--min_learning_rate 1e-5
+--ema_decay 0.999 --ema_start_epoch 5 --ema_scheduler_source raw
+```
+
+Override run-specific values without editing the script, for example:
+
+```bash
+GPU=1 CHECKPOINT=experiments/my_run NUM_EPOCH=100 BATCH_SIZE=16 \
+  bash scripts/run_train_tcad6.sh
 ```
 
 The main BPN implementation is fixed to this TCAD6 configuration. Deprecated
@@ -122,16 +165,35 @@ dynamic TCAD6 setting with a memory guard. The guard caps roughly
 `--po_batch_node_budget` to avoid OOM when increasing graph `--batch_size`;
 set `--po_batch_node_budget 0` only when reproducing the old unconstrained
 PO batching behavior.
-The CPE path-search implementation defaults to the original dense aggregation.
-Use `--cpe_impl compare` on small smoke runs to check the sparse/frontier CPE
-paths against the dense path, then use `--cpe_impl sparse` or
-`--cpe_impl frontier` for profiling.
-The MTDE backward propagation path also defaults to the original DGL
-implementation. Use `--mtde_backward_impl compare` for small equivalence checks
-and `--mtde_backward_impl scatter` to profile the cached-edge scatter path.
-The MTDE forward pass can reuse cached topology edge ids with
-`--mtde_forward_cache cache`; use `--mtde_forward_cache compare` first on a
-small smoke run to check it against the original graph-query path.
+The canonical runtime implementations are:
+
+```text
+--cpe_impl frontier
+--mtde_backward_impl custom
+--mtde_forward_cache cache
+--mtde_forward_impl scatter
+--fse_gnn_impl builtin
+--fse_eval_cache cache
+```
+
+`frontier` keeps the CPE path semantics while avoiding the dense critical-path
+mask. The custom MTDE backward uses a compact autograd function, and the MTDE
+forward uses cached topology tensors plus segmented scatter operations. The FSE
+structure GNN uses DGL built-in aggregation instead of Python message/reduce
+UDFs.
+
+Use the corresponding `compare` modes only on small smoke runs: they execute
+both implementations and check outputs, attention/correlation values, and the
+relevant gradients. The original fallback modes remain available as
+`--mtde_backward_impl dgl`, `--mtde_forward_impl dgl`, and
+`--fse_gnn_impl udf`.
+
+`--fse_eval_cache cache` is active only under `model.eval()` and
+`torch.no_grad()`. It computes the case-invariant FSE node embeddings once per
+batched graph and reuses them across timing cases. Training never uses this
+cache, and a new cache is built for each later evaluation epoch after model
+parameters have changed. Use `--fse_eval_cache compare` for a small evaluation
+smoke test or `--fse_eval_cache off` to disable it.
 
 Evaluate NUA-Timer:
 

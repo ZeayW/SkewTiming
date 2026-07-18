@@ -11,10 +11,21 @@ def get_options(args=None):
                         help='debug only: set CUDA_LAUNCH_BLOCKING=1 before CUDA initialization')
     parser.add_argument('--cpe_impl', type=str, default='frontier', choices=['dense', 'sparse', 'frontier', 'compare'],
                         help='CPE path-search implementation: dense keeps the original behavior; sparse uses sparse aggregation; frontier uses sparse endpoint-node frontiers; compare checks all implementations on the same batch')
-    parser.add_argument('--mtde_backward_impl', type=str, default='scatter', choices=['dgl', 'scatter', 'compare'],
-                        help='MTDE backward correlation propagation: dgl keeps the original DGL pull path; scatter uses cached reverse edges; compare checks both on the same batch')
+    parser.add_argument('--mtde_backward_impl', type=str, default='custom',
+                        choices=['dgl', 'scatter', 'custom', 'compare'],
+                        help='MTDE backward correlation propagation: dgl keeps the original DGL pull path; scatter uses cached reverse edges; custom adds a compact autograd path; compare checks all implementations')
     parser.add_argument('--mtde_forward_cache', type=str, default='cache', choices=['off', 'cache', 'compare'],
                         help='MTDE forward topology-edge lookup cache: off keeps original graph queries; cache reuses cached eids; compare checks cached and original outputs')
+    parser.add_argument('--mtde_forward_impl', type=str, default='scatter', choices=['dgl', 'scatter', 'compare'],
+                        help='MTDE forward propagation: dgl uses graph message passing; scatter uses cached tensor segment operations; compare checks both')
+    parser.add_argument('--fse_gnn_impl', type=str, default='builtin', choices=['udf', 'builtin', 'compare'],
+                        help='FSE structure GNN aggregation: udf keeps Python message/reduce functions; builtin uses DGL built-ins; compare checks outputs and parameter gradients')
+    parser.add_argument('--fse_eval_cache', type=str, default='cache', choices=['off', 'cache', 'compare'],
+                        help='cache case-invariant FSE node embeddings only during eval/no_grad; compare recomputes and checks the cached value')
+    parser.add_argument('--fse_aggregation', choices=('raw_sum', 'endpoint_mean'), default='raw_sum',
+                        help='aggregate FSE node embeddings by raw correlation sum or endpoint-wise normalized mean')
+    parser.add_argument('--cpe_depth_encoding', choices=('absolute', 'correlation_only'), default='absolute',
+                        help='use absolute path distance/position in CPE or retain only correlation-aware path context')
     parser.add_argument('--flag_noTPE', action='store_true')
     parser.add_argument('--flag_noFSE', action='store_true')
     parser.add_argument('--use_corr_pe',action='store_true')
@@ -24,6 +35,19 @@ def get_options(args=None):
     parser.add_argument('--flag_group',action='store_true')
     parser.add_argument('--flag_baseline',type=int,default=-1,help='choose the model, -1: ours; 0:ACCNN; 1:Graph Transformer; 2: Path-based')
     parser.add_argument('--flag_alternate',action='store_true')
+    parser.add_argument('--smooth_ccal', action='store_true',
+                        help='apply 1/3 CCAL and 1/6 residual supervision every epoch instead of hard three-epoch alternation')
+    parser.add_argument('--lr_scheduler', action='store_true',
+                        help='reduce learning rate when validation MAPE plateaus')
+    parser.add_argument('--lr_scheduler_factor', type=float, default=0.25)
+    parser.add_argument('--lr_scheduler_patience', type=int, default=3)
+    parser.add_argument('--min_learning_rate', type=float, default=1e-5)
+    parser.add_argument('--ema_decay', type=float, default=0.0,
+                        help='parameter EMA decay; 0 disables EMA evaluation/checkpoints')
+    parser.add_argument('--ema_start_epoch', type=int, default=5,
+                        help='number of full warmup epochs before EMA updates begin')
+    parser.add_argument('--ema_scheduler_source', type=str, default='raw', choices=['raw', 'ema'],
+                        help='validation parameters used to drive the LR scheduler when EMA is enabled')
     parser.add_argument('--global_out_choice', type=int, default=0,
                         help='choose the way to implement the global attention')
     parser.add_argument('--global_cat_choice', type=int, default=1, help='choose the way to implement the global attention')
@@ -63,6 +87,14 @@ def get_options(args=None):
     parser.add_argument('--target_residual', action='store_true', help=('set the prediction target as the redisual delay'))
     parser.add_argument('--num_fold',type=int,default=5,help=('number of folds (only vaild for train_kfold)'))
     parser.add_argument('--rawdata_path', type=str, help='the directory that contains the raw dataset. Type: str')
+    parser.add_argument('--min_cases_per_design', type=int, default=100,
+                        help='minimum valid timing cases required by the raw-data parser')
+    parser.add_argument('--parser_seed', type=int, default=0,
+                        help='deterministic seed for parser dataset ordering and splits')
+    parser.add_argument('--parser_workers', type=int, default=1,
+                        help='number of processes used to parse cases within each design')
+    parser.add_argument('--parser_constant_impl', choices=('scan', 'worklist', 'compare'),
+                        default='worklist', help='constant propagation implementation')
     parser.add_argument("--checkpoint",type=str,help= "checkpoint to save the results and logs")
     parser.add_argument("--test_iter", type=str, default=None,help="iter to test the model")
     parser.add_argument("--learning_rate", type=float, help = 'the learning rate for training. Type: float.',default=1e-3)
@@ -72,12 +104,26 @@ def get_options(args=None):
     parser.add_argument("--num_epoch", type=int, help='Type: int; number of epoches that the training procedure runs. Type: int',default=2000)
     parser.add_argument("--eval_every", type=int, default=1,
                         help='run validation/test every N epochs; <=0 disables periodic evaluation')
+    parser.add_argument("--test_every", type=int, default=0,
+                        help='run test every N epochs; <=0 follows eval_every while validation remains unchanged')
+    parser.add_argument('--extra_test_data_path', action='append', default=[],
+                        help='additional serialized dataset directory to append to the grouped test set')
     parser.add_argument("--debug_case_limit", type=int, default=0,
                         help='debug only: cap timing cases per design when >0')
     parser.add_argument("--max_train_batches", type=int, default=0,
                         help='debug only: stop each epoch after this many train batches when >0')
     parser.add_argument("--po_batch_size", type=int, default=0,
                         help='training PO batch size override; <=0 keeps the original dynamic TCAD6 setting')
+    parser.add_argument("--test_po_batch_size", type=int, default=0,
+                        help='evaluation PO batch size override; <=0 keeps the design-specific default')
+    parser.add_argument('--eval_impl', choices=('auto', 'legacy', 'case_first'), default='auto',
+                        help='evaluation loop: auto selects case_first for sparse-label or large PO-batched designs')
+    parser.add_argument('--eval_mtde_cache', choices=('off', 'cache'), default='cache',
+                        help='reuse case-specific MTDE forward state across PO batches during case-first evaluation')
+    parser.add_argument('--eval_case_limit', type=int, default=0,
+                        help='debug only: cap cases per design during evaluation when >0')
+    parser.add_argument("--test_prediction_file", type=str, default=None,
+                        help='optional .pt file for labeled test predictions and endpoint/case indices')
     parser.add_argument("--po_batch_node_budget", type=int, default=200000000,
                         help='training memory guard: cap num_nodes * po_batch_size when >0; set 0 to disable')
     parser.add_argument("--in_dim", type=int, help='the dimension of the input feature. Type: int',default=9)

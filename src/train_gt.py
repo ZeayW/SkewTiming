@@ -28,6 +28,7 @@ from dgl import LapPE
 from dgl.nn import LapPosEncoder
 import dgl.sparse as dglsp
 from options_gt import get_options
+from training_utils import valid_endpoint_mask
 
 
 options = get_options()
@@ -257,6 +258,12 @@ def test(model,test_data,batch_size):
 
                 labels_hat = model(sampled_graphs,A)
 
+                valid_mask = valid_endpoint_mask(labels)
+                if not th.any(valid_mask):
+                    continue
+                labels = labels[valid_mask]
+                labels_hat = labels_hat[valid_mask]
+
                 labels_hat_all = cat_tensor(labels_hat_all,labels_hat)
                 labels_all = cat_tensor(labels_all,labels)
 
@@ -270,6 +277,11 @@ def test(model,test_data,batch_size):
         return labels_hat_all,labels_all,test_loss, test_r2,test_mape,min_ratio,max_ratio
 
 def cal_metrics(labels_hat,labels):
+    valid_mask = valid_endpoint_mask(labels)
+    labels_hat = labels_hat[valid_mask]
+    labels = labels[valid_mask]
+    if labels.numel() == 0:
+        raise ValueError('cannot calculate metrics without any labeled endpoints')
     r2 = R2_score(labels_hat, labels).item()
     mape = th.mean(th.abs(labels_hat[labels != 0] - labels[labels != 0]) / labels[labels != 0])
     ratio = labels_hat[labels != 0] / labels[labels != 0]
@@ -360,6 +372,11 @@ def train(model):
                 torch.cuda.empty_cache()
                 labels, sampled_graphs = gather_data(sampled_data, sampled_graphs, i)
                 labels_hat = model(sampled_graphs,A)
+                valid_mask = valid_endpoint_mask(labels)
+                if not th.any(valid_mask):
+                    continue
+                labels = labels[valid_mask]
+                labels_hat = labels_hat[valid_mask]
                 train_loss = Loss(labels_hat, labels)
                 total_labels = cat_tensor(total_labels, labels)
                 total_labels_hat = cat_tensor(total_labels_hat, labels_hat)

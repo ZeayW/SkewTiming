@@ -28,6 +28,14 @@ import tee
 from utils import *
 from time import time
 import itertools
+from contextlib import nullcontext
+from training_utils import (
+    ModelEMA,
+    filter_endpoint_rows,
+    replace_case_50_with_case_0,
+    supervision_loss_weights,
+    valid_endpoint_mask,
+)
 
 
 options = get_options()
@@ -143,7 +151,6 @@ TCAD6_OPTION_CONFIG = {
     'global_info_choice': 12,
     'global_cat_choice': 10,
     'flag_filter': True,
-    'flag_alternate': False,
     'pretrain_dir': None,
     'flag_continue_trainpath': False,
 }
@@ -285,7 +292,7 @@ def load_data(usage,options):
             graph = add_newEtype(graph,'pi2po',([],[]),{})
 
         graph_info['graph'] = graph
-        graph_info['delay-label_pairs'][50] = graph_info['delay-label_pairs'][0]
+        replace_case_50_with_case_0(graph_info)
         graph_info['delay-label_pairs'] = graph_info['delay-label_pairs'][case_range[0]:case_range[1]]
 
         if options.flag_filter:
@@ -421,8 +428,10 @@ def get_batched_data(graphs,po_batch_size=2048):
 
     POs_batches = []
     num_pos = len(POs)
-    for start in range(0, num_pos, po_batch_size):
-        end = min(start + po_batch_size, num_pos)
+    num_po_batches = max(1, (num_pos + po_batch_size - 1) // po_batch_size)
+    for batch_idx in range(num_po_batches):
+        start = batch_idx * num_pos // num_po_batches
+        end = (batch_idx + 1) * num_pos // num_po_batches
         POs_batches.append((POs[start:end], th.arange(start, end, device=device)))
     
     
@@ -430,7 +439,20 @@ def get_batched_data(graphs,po_batch_size=2048):
     topo_levels = gen_topo(sampled_graphs)
     graphs_info['is_heter'] = is_heter(sampled_graphs)
     graphs_info['topo'] = [l.to(device) for l in topo_levels]
-    if getattr(options, 'mtde_forward_cache', 'off') in ['cache', 'compare']:
+    cache_mtde_forward = (
+        getattr(options, 'mtde_forward_cache', 'off') in ['cache', 'compare']
+        or getattr(options, 'mtde_forward_impl', 'dgl') in ['scatter', 'compare']
+    )
+    if cache_mtde_forward:
+        def compact_dst_positions(dst, dst_nodes):
+            if dst.numel() == 0:
+                return dst.new_empty(0)
+            sorted_nodes, original_pos = th.sort(dst_nodes)
+            sorted_pos = th.searchsorted(sorted_nodes, dst)
+            if not th.equal(sorted_nodes[sorted_pos], dst):
+                raise ValueError('MTDE cache contains an edge outside its destination level')
+            return original_pos[sorted_pos]
+
         mtde_forward_cache = []
         for i, nodes in enumerate(graphs_info['topo']):
             entry = {'nodes': nodes}
@@ -439,19 +461,39 @@ def get_batched_data(graphs,po_batch_size=2048):
                 isGate_mask = sampled_graphs.ndata['is_module'][nodes] == 0
                 nodes_gate = nodes[isGate_mask]
                 nodes_module = nodes[isModule_mask]
+                gate_eids = sampled_graphs.in_edges(nodes_gate, form='eid', etype='intra_gate')
+                gate_src, gate_dst = sampled_graphs.find_edges(gate_eids, etype='intra_gate')
+                gate_dst_pos = compact_dst_positions(gate_dst, nodes_gate)
+                module_eids = sampled_graphs.in_edges(nodes_module, form='eid', etype='intra_module')
+                module_src, module_dst = sampled_graphs.find_edges(module_eids, etype='intra_module')
+                module_dst_pos = compact_dst_positions(module_dst, nodes_module)
+
+                module_bit_position = sampled_graphs.edges['intra_module'].data['bit_position'][module_eids]
+                module_bit_position = module_bit_position.reshape(-1, 1)
+                module_width2 = th.zeros((len(nodes_module), 1), dtype=module_bit_position.dtype, device=device)
+                module_width2.index_add_(0, module_dst_pos, module_bit_position)
+                module_counts = th.bincount(module_dst_pos, minlength=len(nodes_module)).clamp(min=1)
+                module_width2 = module_width2 / module_counts.to(module_width2.dtype).unsqueeze(1)
                 entry.update({
                     'nodes_gate': nodes_gate,
-                    'gate_eids': sampled_graphs.in_edges(nodes_gate, form='eid', etype='intra_gate'),
+                    'gate_eids': gate_eids,
+                    'gate_src': gate_src,
+                    'gate_dst': gate_dst,
+                    'gate_dst_pos': gate_dst_pos,
                     'gate_reverse_eids': sampled_graphs.out_edges(nodes_gate, form='eid', etype='reverse'),
                     'nodes_module': nodes_module,
-                    'module_eids': sampled_graphs.in_edges(nodes_module, form='eid', etype='intra_module'),
+                    'module_eids': module_eids,
+                    'module_src': module_src,
+                    'module_dst': module_dst,
+                    'module_dst_pos': module_dst_pos,
+                    'module_width2': module_width2,
                     'module_reverse_eids': sampled_graphs.out_edges(nodes_module, form='eid', etype='reverse'),
                 })
             mtde_forward_cache.append(entry)
         graphs_info['mtde_forward_cache'] = mtde_forward_cache
     topo_r = gen_topo(sampled_graphs, flag_reverse=True)
     graphs_info['topo_r'] = [l.to(device) for l in topo_r]
-    if 'reverse' in sampled_graphs.etypes and options.mtde_backward_impl in ['scatter', 'compare']:
+    if 'reverse' in sampled_graphs.etypes and options.mtde_backward_impl in ['scatter', 'custom', 'compare']:
         graphs_info['topo_r_in_edges'] = [
             tuple(t.to(device) for t in sampled_graphs.in_edges(nodes, form='all', etype='reverse'))
             for nodes in graphs_info['topo_r'][1:]
@@ -462,6 +504,13 @@ def get_batched_data(graphs,po_batch_size=2048):
     graphs_info['POs_batches'] = POs_batches
     
     return sampled_graphs,graphs_info
+
+
+def configure_endpoint_batch(graphs_info, POs):
+    graphs_info['POs'] = POs
+    graphs_info['POs_origin'] = POs
+    graphs_info['PO_cols'] = th.arange(len(POs), dtype=th.long, device=device)
+    graphs_info['num_endpoint_cols'] = len(POs)
 
 def select_train_po_batch_size(num_nodes, num_pos):
     if options.po_batch_size > 0:
@@ -479,15 +528,21 @@ def select_train_po_batch_size(num_nodes, num_pos):
         po_bs = min(po_bs, num_pos)
     return max(1, int(po_bs))
 
-def init_criticality_matrix(graph,POs):
+def init_criticality_matrix(graph, POs, graph_info):
 
-    graph.ndata['hp'] = th.zeros((graph.number_of_nodes(), len(POs)), dtype=th.float, device=device)
-    graph.ndata['hp'][POs, th.arange(len(POs), device=device)] = 1
+    graph.ndata['hp'] = th.zeros(
+        (graph.number_of_nodes(), graph_info['num_endpoint_cols']), dtype=th.float, device=device)
+    graph.ndata['hp'][POs, graph_info['PO_cols']] = 1
     graph.ndata['is_critical'] = graph.ndata['hp'].bool()
 
     return graph
 
 def cal_metrics(labels_hat,labels):
+    valid_mask = valid_endpoint_mask(labels)
+    labels_hat = labels_hat[valid_mask]
+    labels = labels[valid_mask]
+    if labels.numel() == 0:
+        raise ValueError('cannot calculate metrics without any labeled endpoints')
     labels_hat_flat = labels_hat.reshape(-1)
     labels_flat = labels.reshape(-1)
     ss_res = th.sum((labels_flat - labels_hat_flat) ** 2)
@@ -531,11 +586,10 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
                 #print(len(POs),len(POs_mask))
                 # if len(POs)<2000:
                 #     exit()
-                graphs_info['POs'] = POs
-                graphs_info['POs_origin'] = POs
+                configure_endpoint_batch(graphs_info, POs)
                 #graphs_info['batched_POs_mask'] = POs_mask
                 if flag_r:
-                    sampled_graphs = init_criticality_matrix(sampled_graphs,POs)
+                    sampled_graphs = init_criticality_matrix(sampled_graphs, POs, graphs_info)
                 
 
                 graphs_info['nodes_name'] = data['nodes_name']
@@ -549,13 +603,23 @@ def inference(model,test_data,batch_size,usage,save_path,flag_save=False):
 
                     cur_labels_hat, _,_,prob_sum,prob_dev,prob_ce,cur_POs_criticalprob,_ = model(sampled_graphs, graphs_info)[:8]
 
+                    if flag_addedge:
+                        sampled_graphs.remove_edges(sampled_graphs.edges('all', etype='pi2po')[2], etype='pi2po')
+
+                    valid_mask = valid_endpoint_mask(POs_label)
+                    if not th.any(valid_mask):
+                        continue
+                    POs_label = POs_label[valid_mask]
+                    cur_labels_hat = cur_labels_hat[valid_mask]
+                    cur_POs_criticalprob = filter_endpoint_rows(
+                        cur_POs_criticalprob, valid_mask
+                    )
+
                     labels_hat = cat_tensor(labels_hat,cur_labels_hat)
 
                     labels = cat_tensor(labels,POs_label)
                     POs_criticalprob = cat_tensor(POs_criticalprob,cur_POs_criticalprob)
 
-                    if flag_addedge:
-                        sampled_graphs.remove_edges(sampled_graphs.edges('all', etype='pi2po')[2], etype='pi2po')
                 #     data['delay-label_pairs'][j] = (
                 #         PIs_delay, POs_label, None, new_edges, cur_POs_criticalprob.detach().cpu().numpy().tolist())
                 #
@@ -645,6 +709,10 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
     flag_meta = options.flag_meta
     runtime_stats = enable_runtime_stats()
     stage_time = new_stage_time() if runtime_stats else None
+    prediction_file = getattr(options, 'test_prediction_file', None)
+    prediction_endpoint_chunks = [] if prediction_file else None
+    prediction_case_position_chunks = [] if prediction_file else None
+    prediction_case_index_chunks = [] if prediction_file else None
 
     num_cases = 100
     #num_cases = 10
@@ -689,11 +757,10 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                 # print(len(POs),len(POs_mask))
                 # if len(POs)<2000:
                 #     exit()
-                graphs_info['POs'] = POs
-                graphs_info['POs_origin'] = POs
+                configure_endpoint_batch(graphs_info, POs)
                 # graphs_info['batched_POs_mask'] = POs_mask
                 if flag_r:
-                    sampled_graphs = init_criticality_matrix(sampled_graphs, POs)
+                    sampled_graphs = init_criticality_matrix(sampled_graphs, POs, graphs_info)
 
 
                 for j in range(num_cases):
@@ -707,6 +774,48 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
 
                     model_out = model(sampled_graphs, graphs_info, flag_meta, stage_time if runtime_stats else None)
                     cur_labels_hat,cur_labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_,cur_metadata = model_out[:8]
+
+                    if flag_addedge:
+                        sampled_graphs.remove_edges(sampled_graphs.edges('all', etype='pi2po')[2], etype='pi2po')
+
+                    valid_mask = valid_endpoint_mask(POs_label)
+                    if not th.any(valid_mask):
+                        continue
+                    if prediction_file:
+                        if len(sampled_data) != 1:
+                            raise ValueError(
+                                '--test_prediction_file requires test batch_size=1'
+                            )
+                        num_valid = int(valid_mask.sum().item())
+                        case_indices = sampled_data[0].get('case_indices')
+                        case_index = case_indices[j] if case_indices is not None else j
+                        prediction_endpoint_chunks.append(
+                            POs_mask[valid_mask].detach().cpu()
+                        )
+                        prediction_case_position_chunks.append(
+                            th.full((num_valid,), j, dtype=th.long)
+                        )
+                        prediction_case_index_chunks.append(
+                            th.full((num_valid,), case_index, dtype=th.long)
+                        )
+                    POs_label = POs_label[valid_mask]
+                    cur_labels_hat = cur_labels_hat[valid_mask]
+                    cur_labels_hat_residual = cur_labels_hat_residual[valid_mask]
+                    path_inputdelay = path_inputdelay[valid_mask]
+                    prob_sum = filter_endpoint_rows(prob_sum, valid_mask)
+                    prob_dev = filter_endpoint_rows(prob_dev, valid_mask)
+                    prob_ce = filter_endpoint_rows(prob_ce, valid_mask)
+                    if cur_metadata is not None:
+                        cur_metadata = {
+                            key: (
+                                value[valid_mask]
+                                if th.is_tensor(value)
+                                and value.ndim > 0
+                                and value.shape[0] == valid_mask.shape[0]
+                                else value
+                            )
+                            for key, value in cur_metadata.items()
+                        }
 
                     if runtime_stats:
                         num_edp += len(prob_dev)
@@ -733,8 +842,6 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
                     labels_hat_chunks.append(cur_labels_hat.detach().cpu())
                     labels_chunks.append(POs_label.detach().cpu())
 
-                    if flag_addedge:
-                        sampled_graphs.remove_edges(sampled_graphs.edges('all', etype='pi2po')[2], etype='pi2po')
 
         if runtime_stats:
             corr_sim_avg = corr_sim_avg / num_edp if num_edp else 0
@@ -745,6 +852,21 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
         labels = th.cat(labels_chunks, dim=0)
         test_loss = Loss(labels_hat, labels).item()
         test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat, labels)
+
+        if prediction_file:
+            prediction_file = prediction_file.replace('{design}', design_name)
+            prediction_dir = os.path.dirname(prediction_file)
+            if prediction_dir:
+                os.makedirs(prediction_dir, exist_ok=True)
+            th.save({
+                'design_name': design_name,
+                'labels': labels.squeeze(-1),
+                'predictions': labels_hat.squeeze(-1),
+                'endpoint_cols': th.cat(prediction_endpoint_chunks),
+                'case_positions': th.cat(prediction_case_position_chunks),
+                'case_indices': th.cat(prediction_case_index_chunks),
+            }, prediction_file)
+            print('Saved test predictions to {}'.format(prediction_file))
 
         if flag_meta:
             df = load_metadata(None,metadata_all)
@@ -772,6 +894,188 @@ def test(model,test_data,flag_reverse,batch_size,po_bs=2048):
         return result + (corr_sim_avg, metadata_all) if runtime_stats else result + (metadata_all,)
 
 
+def test_case_first(model, test_data, flag_reverse, batch_size, po_bs=2048):
+    del batch_size  # Case-first evaluation intentionally processes one design at a time.
+    flag_meta = options.flag_meta
+    runtime_stats = enable_runtime_stats()
+    stage_time = new_stage_time() if runtime_stats else None
+    prediction_file = getattr(options, 'test_prediction_file', None)
+    if prediction_file and len(test_data) != 1:
+        raise ValueError('--test_prediction_file requires one design in case-first evaluation')
+
+    prediction_endpoint_chunks = [] if prediction_file else None
+    prediction_case_position_chunks = [] if prediction_file else None
+    prediction_case_index_chunks = [] if prediction_file else None
+    labels_chunks, labels_hat_chunks = [], []
+    corr_sim_sum = 0
+    num_edp = 0
+    metadata_all = None
+    design_name = 'unknown'
+    total_cases = 0
+
+    model.flag_train = False
+    model.eval()
+    with th.no_grad():
+        for design_position, data in enumerate(test_data):
+            if runtime_stats:
+                start = time()
+            sampled_graphs, graphs_info = get_batched_data([data['graph']], po_batch_size=po_bs)
+            graphs_info['nodes_name'] = data['nodes_name']
+            design_name = data['design_name']
+            all_nodes = th.arange(sampled_graphs.number_of_nodes(), device=device)
+            all_pos = all_nodes[sampled_graphs.ndata['is_po'] == 1]
+            if runtime_stats:
+                stage_time['other'] += time() - start
+
+            num_cases = min(100, len(data['delay-label_pairs']))
+            if getattr(options, 'eval_case_limit', 0) > 0:
+                num_cases = min(num_cases, options.eval_case_limit)
+            flag_r = flag_reverse or options.flag_path_supervise
+            flag_addedge = options.flag_path_supervise or options.global_cat_choice in [3, 4, 5]
+            for case_position in range(num_cases):
+                total_cases += 1
+                pos_labels, _, sampled_graphs, graphs_info = gather_data(
+                    [data], sampled_graphs, graphs_info, case_position, flag_addedge)
+                valid_cols = th.nonzero(
+                    valid_endpoint_mask(pos_labels), as_tuple=False).squeeze(1)
+                if valid_cols.numel() == 0:
+                    if flag_addedge:
+                        edge_ids = sampled_graphs.edges('all', etype='pi2po')[2]
+                        if edge_ids.numel() != 0:
+                            sampled_graphs.remove_edges(edge_ids, etype='pi2po')
+                    continue
+
+                num_po_batches = max(1, (len(valid_cols) + po_bs - 1) // po_bs)
+                case_indices = data.get('case_indices')
+                case_index = case_indices[case_position] if case_indices is not None else case_position
+                if getattr(options, 'eval_mtde_cache', 'off') == 'cache':
+                    graphs_info['eval_case_key'] = (design_position, case_position)
+                else:
+                    graphs_info.pop('eval_case_key', None)
+                    graphs_info.pop('_mtde_eval_case_cache', None)
+
+                for po_batch_index in range(num_po_batches):
+                    start = po_batch_index * len(valid_cols) // num_po_batches
+                    end = (po_batch_index + 1) * len(valid_cols) // num_po_batches
+                    endpoint_cols = valid_cols[start:end]
+                    pos = all_pos[endpoint_cols]
+                    configure_endpoint_batch(graphs_info, pos)
+                    if flag_r:
+                        sampled_graphs = init_criticality_matrix(sampled_graphs, pos, graphs_info)
+
+                    model_out = model(
+                        sampled_graphs,
+                        graphs_info,
+                        flag_meta,
+                        stage_time if runtime_stats else None,
+                    )
+                    (cur_labels_hat, cur_labels_hat_residual, path_inputdelay,
+                     prob_sum, prob_dev, prob_ce, _, cur_metadata) = model_out[:8]
+                    batch_labels = pos_labels[endpoint_cols]
+
+                    if prediction_file:
+                        num_valid = len(endpoint_cols)
+                        prediction_endpoint_chunks.append(endpoint_cols.detach().cpu())
+                        prediction_case_position_chunks.append(
+                            th.full((num_valid,), case_position, dtype=th.long))
+                        prediction_case_index_chunks.append(
+                            th.full((num_valid,), case_index, dtype=th.long))
+
+                    if runtime_stats:
+                        num_edp += len(prob_dev)
+                        corr_sim_sum += th.sum(prob_dev)
+                    cur_labels_hat = cur_labels_hat.clamp(min=0, max=30)
+
+                    if flag_meta:
+                        cur_labels_hat2 = (cur_labels_hat_residual + path_inputdelay).clamp(min=0, max=30)
+                        cur_metadata['labels_hat1'] = cur_labels_hat
+                        cur_metadata['labels_hat2'] = cur_labels_hat2
+                        cur_metadata['labels_gt'] = batch_labels
+                        for key, value in cur_metadata.items():
+                            cur_metadata[key] = value.squeeze(1).detach().cpu().numpy().tolist()
+                        cur_metadata['case_idx'] = [case_position] * len(batch_labels)
+                        if metadata_all is None:
+                            metadata_all = cur_metadata
+                        else:
+                            for key in metadata_all:
+                                metadata_all[key].extend(cur_metadata[key])
+
+                    labels_hat_chunks.append(cur_labels_hat.detach().cpu())
+                    labels_chunks.append(batch_labels.detach().cpu())
+
+                if flag_addedge:
+                    edge_ids = sampled_graphs.edges('all', etype='pi2po')[2]
+                    if edge_ids.numel() != 0:
+                        sampled_graphs.remove_edges(edge_ids, etype='pi2po')
+
+            graphs_info.pop('eval_case_key', None)
+            graphs_info.pop('_mtde_eval_case_cache', None)
+
+        if not labels_chunks:
+            raise ValueError('case-first evaluation found no labeled endpoints')
+        corr_sim_avg = corr_sim_sum / num_edp if runtime_stats and num_edp else 0
+        if th.is_tensor(corr_sim_avg):
+            corr_sim_avg = corr_sim_avg.item()
+
+        labels_hat = th.cat(labels_hat_chunks, dim=0)
+        labels = th.cat(labels_chunks, dim=0)
+        test_loss = Loss(labels_hat, labels).item()
+        test_r2, test_mape, ratio, min_ratio, max_ratio = cal_metrics(labels_hat, labels)
+
+        if prediction_file:
+            prediction_file = prediction_file.replace('{design}', design_name)
+            prediction_dir = os.path.dirname(prediction_file)
+            if prediction_dir:
+                os.makedirs(prediction_dir, exist_ok=True)
+            th.save({
+                'design_name': design_name,
+                'labels': labels.squeeze(-1),
+                'predictions': labels_hat.squeeze(-1),
+                'endpoint_cols': th.cat(prediction_endpoint_chunks),
+                'case_positions': th.cat(prediction_case_position_chunks),
+                'case_indices': th.cat(prediction_case_index_chunks),
+            }, prediction_file)
+            print('Saved test predictions to {}'.format(prediction_file))
+
+        if flag_meta:
+            df = load_metadata(None, metadata_all)
+            save_dir = os.path.join(options.checkpoint, options.predict_path, design_name)
+            os.makedirs(save_dir, exist_ok=True)
+            for key in metadata_all:
+                if key not in ['labels_hat1', 'labels_hat2', 'labels_gt']:
+                    plot_feature_vs_error(df, key, save_dir=save_dir)
+            for key in metadata_all:
+                metadata_all[key] = th.tensor(metadata_all[key], dtype=th.float)
+
+        if runtime_stats:
+            for key, value in stage_time.items():
+                if key != 'all':
+                    stage_time['all'] += value
+            runtime_str = 'Runtime: '
+            for key, value in stage_time.items():
+                runtime_str += '{}={}, '.format(key, round(value / max(total_cases, 1), 3))
+            print(runtime_str)
+
+        result = (labels_hat, labels, test_loss, test_r2, test_mape, min_ratio, max_ratio)
+        return result + (corr_sim_avg, metadata_all) if runtime_stats else result + (metadata_all,)
+
+
+def use_case_first_eval(data, po_bs):
+    eval_impl = getattr(options, 'eval_impl', 'legacy')
+    if eval_impl != 'auto':
+        return eval_impl == 'case_first'
+
+    for graph_info in data:
+        diagnostics = graph_info.get('parser_diagnostics', {})
+        if diagnostics.get('missing_po_labels', 0) > 0:
+            return True
+        graph = graph_info['graph']
+        num_pos = int(graph.ndata['is_po'].sum().item())
+        if graph.number_of_nodes() >= 300000 and num_pos > po_bs:
+            return True
+    return False
+
+
 def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',flag_group=False,flag_infer=False,flag_save=False,save_file_dir=None):
     metadata_all = {}
     runtime_stats = enable_runtime_stats()
@@ -787,7 +1091,9 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
         for i, (name, data) in enumerate(test_data.items()):
             #torch.cuda.empty_cache()
 
-            if name in ['aes128']:
+            if options.test_po_batch_size > 0:
+                po_bs = options.test_po_batch_size
+            elif name in ['aes128']:
                 po_bs = 3500
             else:
                 po_bs = 10000
@@ -796,7 +1102,8 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
             if flag_infer:
                 labels_hat, labels, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, data,batch_sizes[i], usage,save_file_dir,flag_save)
             else:
-                test_out = test(model, data,flag_reverse,batch_size,po_bs=po_bs)
+                test_fn = test_case_first if use_case_first_eval(data, po_bs) else test
+                test_out = test_fn(model, data,flag_reverse,batch_size,po_bs=po_bs)
                 if runtime_stats:
                     labels_hat,labels,test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio,corr_sim,metadata = test_out
                 else:
@@ -839,7 +1146,8 @@ def test_all(test_data,model,batch_size,flag_reverse,po_bs=2048,usage='test',fla
         if flag_infer:
             _, _, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio = inference(model, test_data,batch_size, usage,save_file_dir, flag_save)
         else:
-            test_out = test(model, test_data,flag_reverse,batch_size,po_bs=po_bs)
+            test_fn = test_case_first if use_case_first_eval(test_data, po_bs) else test
+            test_out = test_fn(model, test_data,flag_reverse,batch_size,po_bs=po_bs)
             if runtime_stats:
                 labels_hat_all, labels_all, test_loss, test_r2, test_mape, test_min_ratio, test_max_ratio,corr_sim,metadata = test_out
             else:
@@ -878,26 +1186,67 @@ def train(model):
 
     print("Data successfully loaded")
 
-    def ensure_eval_data():
-        nonlocal val_data, test_data
-        if val_data is not None and test_data is not None:
+    def ensure_val_data():
+        nonlocal val_data
+        if val_data is not None:
             return
         val_options = copy.copy(options)
         val_options.data_savepath = train_data_savepath
         val_options.flag_group = False
         val_data = load_data('test', val_options)
+        print("Validation data successfully loaded")
 
+    def ensure_test_data():
+        nonlocal test_data
+        if test_data is not None:
+            return
         test_options = copy.copy(options)
         test_options.data_savepath = '../datasets/cases_round7_v5/heter_removepiPO_new_full/'
         test_options.flag_group = True
         test_data = load_data('test', test_options)
-        print("Evaluation data successfully loaded")
+        for extra_path in getattr(options, 'extra_test_data_path', []):
+            extra_options = copy.copy(test_options)
+            extra_options.data_savepath = extra_path
+            extra_options.quick = False
+            extra_data = load_data('test', extra_options)
+            for design_name, design_data in extra_data.items():
+                if design_name in test_data:
+                    raise ValueError('duplicate test design {!r} from {}'.format(
+                        design_name, extra_path))
+                test_data[design_name] = design_data
+        print("Test data successfully loaded: {}".format(', '.join(test_data.keys())))
 
     train_idx_loader = get_idx_loader(train_data,options.batch_size,True)
 
     optim = th.optim.Adam(
         model.parameters(), options.learning_rate, weight_decay=options.weight_decay
     )
+    scheduler = None
+    if options.lr_scheduler:
+        scheduler = th.optim.lr_scheduler.ReduceLROnPlateau(
+            optim,
+            mode='min',
+            factor=options.lr_scheduler_factor,
+            patience=options.lr_scheduler_patience,
+            min_lr=options.min_learning_rate,
+        )
+    ema = ModelEMA(model, options.ema_decay) if options.ema_decay > 0 else None
+    if options.ema_start_epoch < 0:
+        raise ValueError('--ema_start_epoch must be non-negative')
+    if options.smooth_ccal and options.flag_alternate:
+        raise ValueError('--smooth_ccal replaces --flag_alternate; do not enable both')
+
+    print('Optimization controls: scheduler={} factor={} patience={} min_lr={} '
+          'ema_decay={} ema_start_epoch={} ema_scheduler_source={} smooth_ccal={}'.format(
+        options.lr_scheduler,
+        options.lr_scheduler_factor,
+        options.lr_scheduler_patience,
+        options.min_learning_rate,
+        options.ema_decay,
+        options.ema_start_epoch,
+        options.ema_scheduler_source,
+        options.smooth_ccal,
+    ))
 
     model.train()
 
@@ -911,13 +1260,19 @@ def train(model):
 
         model.train()
         model.flag_train = True
+        if ema is not None and epoch == options.ema_start_epoch:
+            print('EMA updates begin after {} warmup epoch(s)'.format(options.ema_start_epoch), flush=True)
 
         flag_path = options.flag_path_supervise
         flag_reverse = options.flag_reverse
         #Loss = nn.L1Loss()
-        if options.flag_alternate:
+        if options.smooth_ccal:
+            flag_path = True
+        elif options.flag_alternate:
             if epoch%3!=0:
                 flag_path = False
+
+        ccal_weight, residual_weight = supervision_loss_weights(flag_path, options.smooth_ccal)
 
         model.flag_path_supervise = flag_path
         model.flag_reverse = flag_reverse
@@ -925,11 +1280,15 @@ def train(model):
         #train_idx_loader.batch_size = options.batch_size if epoch%2==0 else options.batch_size*2
 
         print('Epoch {} ------------------------------------------------------------'.format(epoch+1))
+        print('Supervision: path={} ccal_weight={:.6f} residual_weight={:.6f}'.format(
+            flag_path, ccal_weight, residual_weight), flush=True)
         total_num,total_loss, total_r2 = 0,0.0,0
 
         for batch, idxs in enumerate(train_idx_loader):
             batch_start_time = time()
             batch_profile = new_train_profile() if enable_runtime_stats() else None
+            if batch_profile is not None and device.type == 'cuda':
+                th.cuda.reset_peak_memory_stats(device)
             #torch.cuda.empty_cache()
             sampled_data = []
 
@@ -966,13 +1325,11 @@ def train(model):
             #print(len(graphs_info['POs_batches'][0][0]),sampled_graphs.number_of_nodes())
 
             for POs, POs_mask in graphs_info['POs_batches']:
-                if len(POs) < 200: continue
                 POs_mask = POs_mask.to(device) if th.is_tensor(POs_mask) else th.tensor(POs_mask, device=device)
-                graphs_info['POs'] = POs
-                graphs_info['POs_origin'] = POs
+                configure_endpoint_batch(graphs_info, POs)
 
                 if flag_r:
-                    sampled_graphs = init_criticality_matrix(sampled_graphs, POs)
+                    sampled_graphs = init_criticality_matrix(sampled_graphs, POs, graphs_info)
 
                 for i in range(num_cases):
                     #torch.cuda.empty_cache()
@@ -994,6 +1351,22 @@ def train(model):
                     else:
                         model_out = model(sampled_graphs, graphs_info)
                     labels_hat, labels_hat_residual,path_inputdelay,prob_sum,prob_dev,prob_ce,_,_ = model_out[:8]
+
+                    valid_mask = valid_endpoint_mask(POs_label)
+                    if not th.any(valid_mask):
+                        if flag_addedge:
+                            sampled_graphs.remove_edges(
+                                sampled_graphs.edges('all', etype='pi2po')[2],
+                                etype='pi2po',
+                            )
+                        continue
+                    POs_label = POs_label[valid_mask]
+                    labels_hat = labels_hat[valid_mask]
+                    labels_hat_residual = labels_hat_residual[valid_mask]
+                    path_inputdelay = path_inputdelay[valid_mask]
+                    prob_sum = filter_endpoint_rows(prob_sum, valid_mask)
+                    prob_dev = filter_endpoint_rows(prob_dev, valid_mask)
+                    prob_ce = filter_endpoint_rows(prob_ce, valid_mask)
                     total_num += len(POs_label)
                     if batch_profile is not None:
                         profile_start = sync_timer_start()
@@ -1009,9 +1382,10 @@ def train(model):
                         #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(th.exp(1 - path_loss))
                         #train_loss = th.mean(th.abs(labels_hat-POs_label)) + th.mean(prob_ce)
                         #train_loss = th.mean(th.pow(labels_hat - POs_label,2)) + th.mean(prob_ce)
-                        train_loss += th.mean(prob_ce)
+                        train_loss += ccal_weight * th.mean(prob_ce)
                         if options.flag_residual:
-                            train_loss += 0.5*Loss(labels_hat_residual, POs_label-path_inputdelay)
+                            train_loss += residual_weight * Loss(
+                                labels_hat_residual, POs_label-path_inputdelay)
                             #print(th.cat((labels_hat_residual+path_inputdelay-labels_hat,labels_hat-POs_label),dim=1))
                         #train_loss = th.mean((th.exp(1 - path_loss)) * th.pow(labels_hat - POs_label,2))
                     # if options.flag_residual:
@@ -1042,6 +1416,8 @@ def train(model):
                     optim.zero_grad()
                     train_loss.backward()
                     optim.step()
+                    if ema is not None and epoch >= options.ema_start_epoch:
+                        ema.update(model)
                     if batch_profile is not None:
                         sync_timer_add(batch_profile, 'backward_step', profile_start)
                     #torch.cuda.empty_cache()
@@ -1055,6 +1431,11 @@ def train(model):
 
             if batch_profile is not None:
                 print(format_profile(batch_profile), flush=True)
+                if device.type == 'cuda':
+                    print('Peak CUDA memory: allocated={:.2f}GiB reserved={:.2f}GiB'.format(
+                        th.cuda.max_memory_allocated(device) / (1024 ** 3),
+                        th.cuda.max_memory_reserved(device) / (1024 ** 3),
+                    ), flush=True)
             if options.max_train_batches > 0 and batch + 1 >= options.max_train_batches:
                 print('Reached max_train_batches={} at epoch {}'.format(options.max_train_batches, epoch), flush=True)
                 break
@@ -1062,26 +1443,82 @@ def train(model):
         torch.cuda.empty_cache()
         print('End of epoch {}'.format(epoch))
         should_eval = options.eval_every > 0 and (epoch + 1) % options.eval_every == 0
+        test_every = options.test_every if options.test_every > 0 else options.eval_every
+        should_test = test_every > 0 and (epoch + 1) % test_every == 0
         val_r2 = val_mape = test_r2 = test_mape = float('nan')
-        if should_eval:
-            ensure_eval_data()
-            po_bs = 2048
-            val_r2,val_mape = test_all(val_data,model,options.batch_size,po_bs=po_bs,usage='val',flag_reverse=flag_reverse or flag_path)
-            #test_r2, test_mape = test_all(test_data,model,options.batch_size,po_bs=po_bs,usage='test',flag_reverse=flag_reverse or flag_path, flag_group=options.flag_group)
-            test_r2, test_mape = test_all(test_data, model, 1, po_bs=po_bs, usage='test',
-                                          flag_reverse=flag_reverse or flag_path, flag_group=True)
-        else:
-            print('Skipping evaluation at epoch {} (eval_every={})'.format(epoch, options.eval_every))
+        raw_val_r2 = raw_val_mape = float('nan')
 
-        #torch.cuda.empty_cache()
-        if options.checkpoint:
-            save_path = '../checkpoints/{}'.format(options.checkpoint)
-            th.save(model.state_dict(), os.path.join(save_path,"{}.pth".format(epoch)))
-            with open(os.path.join(checkpoint_path,'res.txt'),'a') as f:
-                if should_eval:
-                    f.write('Epoch {}, val: {:.3f},{:.3f}; test: {:.3f},{:.3f}\n'.format(epoch,val_r2,val_mape,test_r2,test_mape))
-                else:
-                    f.write('Epoch {}, evaluation skipped\n'.format(epoch))
+        # Keep the scheduler trajectory identical to the raw Scheduler baseline.
+        # A second validation pass is needed only after EMA has received updates.
+        use_raw_scheduler_metric = (
+            scheduler is not None
+            and ema is not None
+            and options.ema_scheduler_source == 'raw'
+        )
+        if should_eval and use_raw_scheduler_metric and ema.num_updates > 0:
+            ensure_val_data()
+            po_bs = 2048
+            raw_val_r2, raw_val_mape = test_all(
+                val_data,
+                model,
+                options.batch_size,
+                po_bs=po_bs,
+                usage='val',
+                flag_reverse=flag_reverse or flag_path,
+            )
+            print('Raw validation for scheduler: r2={:.3f}, mape={:.3f}'.format(
+                raw_val_r2, raw_val_mape), flush=True)
+
+        eval_parameters = ema.average_parameters(model) if ema is not None else nullcontext()
+        with eval_parameters:
+            if should_eval:
+                ensure_val_data()
+                po_bs = 2048
+                val_r2,val_mape = test_all(val_data,model,options.batch_size,po_bs=po_bs,usage='val',flag_reverse=flag_reverse or flag_path)
+                if use_raw_scheduler_metric and ema.num_updates == 0:
+                    raw_val_r2, raw_val_mape = val_r2, val_mape
+            else:
+                print('Skipping validation at epoch {} (eval_every={})'.format(epoch, options.eval_every))
+
+            if should_test:
+                ensure_test_data()
+                po_bs = 2048
+                test_r2, test_mape = test_all(test_data, model, 1, po_bs=po_bs, usage='test',
+                                              flag_reverse=flag_reverse or flag_path, flag_group=True)
+            else:
+                print('Skipping test at epoch {} (test_every={})'.format(epoch, test_every))
+
+            # Save the same parameters that produced the recorded metrics.
+            if options.checkpoint:
+                save_path = '../checkpoints/{}'.format(options.checkpoint)
+                th.save(model.state_dict(), os.path.join(save_path,"{}.pth".format(epoch)))
+                with open(os.path.join(checkpoint_path,'res.txt'),'a') as f:
+                    if should_eval:
+                        result = 'Epoch {}, val: {:.3f},{:.3f}'.format(epoch, val_r2, val_mape)
+                        if should_test:
+                            result += '; test: {:.3f},{:.3f}'.format(test_r2, test_mape)
+                        else:
+                            result += '; test skipped'
+                        if ema is not None:
+                            result += '; raw val: {:.3f},{:.3f}; ema_updates: {}'.format(
+                                raw_val_r2, raw_val_mape, ema.num_updates)
+                        f.write(result + '\n')
+                    else:
+                        result = 'Epoch {}, validation skipped'.format(epoch)
+                        if should_test:
+                            result += '; test: {:.3f},{:.3f}'.format(test_r2, test_mape)
+                        else:
+                            result += '; test skipped'
+                        f.write(result + '\n')
+
+        if scheduler is not None and should_eval:
+            scheduler_mape = raw_val_mape if use_raw_scheduler_metric else val_mape
+            scheduler_source = 'raw' if use_raw_scheduler_metric else ('ema' if ema is not None else 'raw')
+            old_lr = optim.param_groups[0]['lr']
+            scheduler.step(scheduler_mape)
+            new_lr = optim.param_groups[0]['lr']
+            print('Learning rate ({} val MAPE {:.6f}): {:.6g} -> {:.6g}'.format(
+                scheduler_source, scheduler_mape, old_lr, new_lr), flush=True)
 
 
 if __name__ == "__main__":
@@ -1117,6 +1554,11 @@ if __name__ == "__main__":
         options.predict_path = input_options.predict_path
         options.flag_meta = input_options.flag_meta
         options.log_level = input_options.log_level
+        options.test_po_batch_size = input_options.test_po_batch_size
+        options.eval_impl = input_options.eval_impl
+        options.eval_mtde_cache = input_options.eval_mtde_cache
+        options.eval_case_limit = input_options.eval_case_limit
+        options.test_prediction_file = input_options.test_prediction_file
 
 
         options = merge_with_loaded(input_options,options)
@@ -1133,7 +1575,11 @@ if __name__ == "__main__":
             model = init_model(options)
             model.flag_train = True
             flag_inference = False
-            po_bs = 2048
+            po_bs = (
+                options.test_po_batch_size
+                if getattr(options, 'test_po_batch_size', 0) > 0
+                else 2048
+            )
 
             model = model.to(device)
             model.load_state_dict(th.load(model_save_path,map_location='cuda:{}'.format(options.gpu) if th.cuda.is_available() else "cpu" ))
