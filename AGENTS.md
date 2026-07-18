@@ -18,10 +18,10 @@ of this repository's experiment workflow.
   ```
 
 - Run experiments on the remote server, not on the local machine.
-- Generate datasets on `linux10`, including running `src/parser.py` and
-  producing the serialized `.pkl` files. Do not run parser/data generation on
-  the experiment servers.
-- After parser output has been validated on `linux10`, transfer the completed
+- Generate datasets on `hpc2`, including running `src/parser.py` under the
+  `dgl_3090` conda environment and producing the serialized `.pkl` files. Do
+  not run parser/data generation on linux10 or the experiment servers.
+- After parser output has been validated on `hpc2`, transfer the completed
   serialized dataset to whichever execution server will run the experiment
   (`149`, `169`, or `170`). Those servers are for training and testing against
   the transferred dataset.
@@ -31,7 +31,7 @@ of this repository's experiment workflow.
   /data/zywang/Codes/RTL-Timing-Prediction
   ```
 
-- Use the remote conda environment:
+- Use this conda environment for training and testing on 149/169/170:
 
   ```bash
   conda activate dgl_new
@@ -71,17 +71,30 @@ machine is down.
 The required data flow is:
 
 ```text
-raw netlist/timing data on linux10
-  -> run src/parser.py on linux10
-  -> validate data.pkl, split.pkl, and ntype2id.pkl on linux10
+raw netlist/timing data on the shared linux10/HPC filesystem
+  -> run src/parser.py on hpc2 under dgl_3090
+  -> validate data.pkl, split.pkl, and ntype2id.pkl on hpc2
   -> transfer the completed dataset directory to 149/169/170
   -> train or test on the selected execution server
 ```
 
-Keep raw data, parser work directories, and incomplete parser output on
-`linux10`. Transfer only a completed, validated serialized dataset to the
-execution servers. Do not generate `.pkl` datasets independently on multiple
-execution servers, because that can introduce parser-version or split drift.
+The parser execution configuration is:
+
+```bash
+ssh hpc2
+source /research/d4/gds/ziyiwang21/miniconda3/etc/profile.d/conda.sh
+conda activate dgl_3090
+cd /research/d4/gds/ziyiwang21/Code/RTL-Timing-Prediction/src
+bash scripts/run_parser_train.sh
+# Or, for test data:
+bash scripts/run_parser_test.sh
+```
+
+Keep raw data, parser work directories, and incomplete parser output on the
+shared linux10/HPC filesystem, but run the parser process on `hpc2` only.
+Transfer only a completed, validated serialized dataset to the execution
+servers. Do not generate `.pkl` datasets independently on multiple machines,
+because that can introduce parser-version or split drift.
 
 ## Sync Policy
 
@@ -254,11 +267,16 @@ runtime breakdowns, and `corr_sim` reporting.
 
 ## Standard Experiment Scripts
 
-Run from `src/`:
+Run the parser scripts from `src/` on `hpc2` under `dgl_3090`:
 
 ```bash
 bash scripts/run_parser_train.sh
 bash scripts/run_parser_test.sh
+```
+
+Run the training and test scripts from `src/` on 149/169/170 under `dgl_new`:
+
+```bash
 bash scripts/run_train_tcad6.sh
 bash scripts/run_test_our_tcad.sh
 bash scripts/run_test_accnn.sh
@@ -283,8 +301,9 @@ bash scripts/run_test_masterrtl.sh
 
 ## Validation
 
-For code edits, prefer lightweight local syntax/import checks when possible,
-then run the real training/testing workload remotely under `dgl_new`.
+For code edits, prefer lightweight local syntax/import checks when possible.
+Run parser validation on `hpc2` under `dgl_3090`, and run the real
+training/testing workload on 149/169/170 under `dgl_new`.
 
 Useful local checks:
 
